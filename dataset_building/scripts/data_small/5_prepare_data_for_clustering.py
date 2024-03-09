@@ -25,6 +25,6 @@ After this, from belsuono I ran:
 
 python run.py --expt-name=fewshot_data_small_avg50 --dataset-info-fp=/home/jupyter/fewshot/data/data_small/pseudovox_manifest_edited.csv --features=avesonly --clustering=minibatch_kmeans --n-clusters=2193 --num-workers=0; python run.py --expt-name=fewshot_data_small_avg50_umap --dataset-info-fp=/home/jupyter/fewshot/data/data_small/pseudovox_manifest_edited.csv --features=avesonly --clustering=minibatch_kmeans --n-clusters=2193 --dimensionality-reduction=umap --num-workers=0
 
-I copied the clusters from umap, since it had fewer clusters with <10 elements
+I copied the clusters from the non-umapped version, for simplicity.
 
 '''

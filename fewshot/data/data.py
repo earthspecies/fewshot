@@ -31,9 +31,12 @@ class FewshotDataset(Dataset):
         self.background_audio_info = pd.read_csv(args.background_audio_info_fp)
         self.pseudovox_info = pd.read_csv(args.pseudovox_info_fp)
         
-        # Subselect examples to be used
+        # Subselect background examples to be used
         self.background_audio_info = self.background_audio_info[self.background_audio_info['duration_sec'] >= args.min_background_duration]
+        
+        # Subselect pseudovox to be used
         self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['duration_sec'] <= args.max_pseudovox_duration]
+        self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['birdnet_confidence'] > args.birdnet_confidence_strict_lower_bound]
         self.clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info['prediction'].value_counts()[self.pseudovox_info['prediction'].value_counts() >= args.min_cluster_size].index))
     
     def get_pseudovox_rate(self, label, rng):
@@ -251,11 +254,13 @@ if __name__ == "__main__":
     parser.add_argument('--pseudovox-audio-dir', type = str, default = '/home/jupyter/fewshot/data/data_small/pseudovox', help="path to dir with pseudovox audio")
     
     parser.add_argument('--background-audio-info-fp', type = str, default='/home/jupyter/fewshot/data/data_small/background_audio_info.csv')
-    parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/fewshot/data/data_small/pseudovox_manifest_with_clusters.csv')
+    parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/fewshot/data/data_small/pseudovox_manifest_birdnet_filtered.csv')
     
     parser.add_argument('--min-background-duration', type=float, default = 15, help = "the min dur in seconds that a file is allowed to be, in order for it to be used as background audio.")
     parser.add_argument('--max-pseudovox-duration', type=float, default=5, help= "the max dur in seconds that a pseudovox may be")
     parser.add_argument('--min-cluster-size', type = int, default=10, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
+    
     parser.add_argument('--sr', type=int, default=16000)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-workers', type=int, default=0)
