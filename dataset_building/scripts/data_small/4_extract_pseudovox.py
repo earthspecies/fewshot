@@ -81,7 +81,7 @@ if not os.path.exists(output_dir):
 
 raw_audio_fps = sorted(glob(os.path.join(raw_dir, "*.wav")))
 
-info = {'raw_audio_fp' : [], 'stem_audio_fp' : [], 'pseudovox_audio_fp' : [], 'Start Time (s)' : [], 'End Time (s)' : []}
+info = {'raw_audio_fp' : [], 'stem_audio_fp' : [], 'pseudovox_audio_fp' : [], 'Begin Time (s)' : [], 'End Time (s)' : []}
 
 for raw_audio_fp in tqdm(raw_audio_fps):
     raw_audio, raw_sr = sf.read(raw_audio_fp)
@@ -104,7 +104,7 @@ for raw_audio_fp in tqdm(raw_audio_fps):
         # create mask
         mask = envelope > .25
 
-        filled_mask = fill_holes_fast(mask, int(sr*.3))
+        filled_mask = fill_holes_fast(mask, int(sr*.1))
         thinned_mask = delete_short_fast(filled_mask, int(sr*.03))
         
         # select clips
@@ -124,14 +124,18 @@ for raw_audio_fp in tqdm(raw_audio_fps):
             s, e = clip
             
             pad_len = int(0.05*sr) #TODO account for audio boundary
+            s = max(0, s-pad_len)
+            e= e+pad_len
+            
+            ramp_len = int(0.05*sr) #TODO account for audio boundary
 
-            on_ramp = np.linspace(0.0, 1.0, pad_len)
-            off_ramp = np.linspace(1.0, 0.0, pad_len)
+            on_ramp = np.linspace(0.0, 1.0, ramp_len)
+            off_ramp = np.linspace(1.0, 0.0, ramp_len)
             
-            padded_clip = audio[max(0, s-pad_len):e+pad_len]
+            padded_clip = audio[max(0, s-ramp_len):e+ramp_len]
             
-            padded_clip[-pad_len:] = padded_clip[-pad_len:] * off_ramp
-            padded_clip[:pad_len] = padded_clip[:pad_len] * on_ramp
+            padded_clip[-ramp_len:] = padded_clip[-ramp_len:] * off_ramp
+            padded_clip[:ramp_len] = padded_clip[:ramp_len] * on_ramp
                 
             target_fn = os.path.basename(stem_fp).replace(".wav", f"_clip{k}.wav")
             target_fp = os.path.join(output_dir, target_fn)
@@ -139,7 +143,7 @@ for raw_audio_fp in tqdm(raw_audio_fps):
             info['raw_audio_fp'].append(raw_audio_fp)
             info['stem_audio_fp'].append(stem_fp)
             info['pseudovox_audio_fp'].append(target_fp)
-            info['Start Time (s)'].append(s/sr)
+            info['Begin Time (s)'].append(s/sr)
             info['End Time (s)'].append(e/sr)
             
             sf.write(target_fp, padded_clip, sr)

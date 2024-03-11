@@ -16,15 +16,13 @@ pseudovox_df['filepath'] = pseudovox_df['pseudovox_audio_fp']
 
 longest_allowed_pseudovox_sec = 6
 
-pseudovox_df = pseudovox_df[pseudovox_df['End Time (s)'] - pseudovox_df['Start Time (s)'] < longest_allowed_pseudovox_sec]
+pseudovox_df = pseudovox_df[pseudovox_df['End Time (s)'] - pseudovox_df['Begin Time (s)'] < longest_allowed_pseudovox_sec]
 
 pseudovox_df.to_csv('/home/jupyter/fewshot/data/data_small/pseudovox_manifest_edited.csv', index=False)
 
 '''
 After this, from belsuono I ran:
 
-python run.py --expt-name=fewshot_data_small_avg50 --dataset-info-fp=/home/jupyter/fewshot/data/data_small/pseudovox_manifest_edited.csv --features=avesonly --clustering=minibatch_kmeans --n-clusters=2193 --num-workers=0; python run.py --expt-name=fewshot_data_small_avg50_umap --dataset-info-fp=/home/jupyter/fewshot/data/data_small/pseudovox_manifest_edited.csv --features=avesonly --clustering=minibatch_kmeans --n-clusters=2193 --dimensionality-reduction=umap --num-workers=0
-
-I copied the clusters from the non-umapped version, for simplicity.
+python run.py --expt-name=fewshot_data_small_avg50_v2 --dataset-info-fp=/home/jupyter/fewshot/data/data_small/pseudovox_manifest_edited.csv --features=avesonly --clustering=minibatch_kmeans --n-clusters=3620 --num-workers=0
 
 '''

@@ -37,7 +37,7 @@ class FewshotDataset(Dataset):
         # Subselect pseudovox to be used
         self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['duration_sec'] <= args.max_pseudovox_duration]
         self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['birdnet_confidence'] > args.birdnet_confidence_strict_lower_bound]
-        self.clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info['prediction'].value_counts()[self.pseudovox_info['prediction'].value_counts() >= args.min_cluster_size].index))
+        self.clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info[self.args.cluster_column].value_counts()[self.pseudovox_info[self.args.cluster_column].value_counts() >= args.min_cluster_size].index))
     
     def get_pseudovox_rate(self, label, rng):
         # return rate in pseudovox / second
@@ -104,7 +104,7 @@ class FewshotDataset(Dataset):
         # prepare which pseudovox to choose from, for adding to background audio
         
         pseudovox_from_here = self.pseudovox_info[self.pseudovox_info['raw_audio_fp'].isin(background_audio_fps)]
-        clusters_present = pseudovox_from_here['prediction'].unique()
+        clusters_present = pseudovox_from_here[self.args.cluster_column].unique()
         clusters_allowed = self.clusters_with_enough_examples[~self.clusters_with_enough_examples.isin(clusters_present)]
         
         if len(clusters_allowed) < 3:
@@ -135,7 +135,7 @@ class FewshotDataset(Dataset):
             # get the exact pseudovox to insert
             
             c = clusters_to_possibly_include[i]
-            possible_pseudovox = self.pseudovox_info[self.pseudovox_info['prediction'] == c]
+            possible_pseudovox = self.pseudovox_info[self.pseudovox_info[self.args.cluster_column] == c]
 
             pseudovox_support = possible_pseudovox.sample(n=n_pseudovox_support, replace=True, random_state=index)
             pseudovox_query = possible_pseudovox.sample(n=n_pseudovox_query, replace=True, random_state=index+1)
@@ -260,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument('--max-pseudovox-duration', type=float, default=5, help= "the max dur in seconds that a pseudovox may be")
     parser.add_argument('--min-cluster-size', type = int, default=10, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
+    parser.add_argument('--cluster-column', type=str, default='prediction', choices=['prediction', 'birdnet_prediction'], help="name of column in manifest to use for forming groups of calls")
     
     parser.add_argument('--sr', type=int, default=16000)
     parser.add_argument('--batch-size', type=int, default=1)
