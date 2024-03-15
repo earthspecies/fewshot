@@ -1,0 +1,1 @@
+In the following audio, audio events of the type we are interested to detect are located at the intervals {timestamps}. Find all audio events of the same type after these. Respond with only their timestamps, in the format [(t1_start, t1_end), (t2_start, t2_end)...] listing the intervals of all audio events of the target class.

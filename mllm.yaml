@@ -1,0 +1,26 @@
+data_args:
+  background_audio_dir: data_small/audio_trimmed
+  pseudovox_audio_dir: data_small/pseudovox
+  background_audio_info_fp: data_small/background_audio_info.csv
+  pseudovox_info_fp: data_small/pseudovox_manifest_birdnet_filtered.csv
+  min_background_duration: 15
+  max_pseudovox_duration: 5
+  min_cluster_size: 10
+  birdnet_confidence_strict_lower_bound: 0
+  cluster_column: prediction
+  sr: 16000
+  batch_size: 16
+  num_workers: 0
+  n_synthetic_examples: 10000
+  support_dur_sec: 30
+  query_dur_sec: 20
+
+training_args:
+  learning_rate: 0.001
+  epochs: 10
+  optimizer: adam
+
+model_args:
+  model_type: ALLM
+  model_name: Qwen/Qwen-Audio-Chat
+  # Add additional model parameters or options here

@@ -28,16 +28,16 @@ class FewshotDataset(Dataset):
         self.args = args
         
         # Load audio info csv's
-        self.background_audio_info = pd.read_csv(args.background_audio_info_fp)
-        self.pseudovox_info = pd.read_csv(args.pseudovox_info_fp)
+        self.background_audio_info = pd.read_csv(self.args.background_audio_info_fp)
+        self.pseudovox_info = pd.read_csv(self.args.pseudovox_info_fp)
         
         # Subselect background examples to be used
-        self.background_audio_info = self.background_audio_info[self.background_audio_info['duration_sec'] >= args.min_background_duration]
+        self.background_audio_info = self.background_audio_info[self.background_audio_info['duration_sec'] >= self.args.min_background_duration]
         
         # Subselect pseudovox to be used
-        self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['duration_sec'] <= args.max_pseudovox_duration]
-        self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['birdnet_confidence'] > args.birdnet_confidence_strict_lower_bound]
-        self.clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info[self.args.cluster_column].value_counts()[self.pseudovox_info[self.args.cluster_column].value_counts() >= args.min_cluster_size].index))
+        self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['duration_sec'] <= self.args.max_pseudovox_duration]
+        self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['birdnet_confidence'] > self.args.birdnet_confidence_strict_lower_bound]
+        self.clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info[self.args.cluster_column].value_counts()[self.pseudovox_info[self.args.cluster_column].value_counts() >= self.args.min_cluster_size].index))
     
     def get_pseudovox_rate(self, label, rng):
         # return rate in pseudovox / second
@@ -64,14 +64,14 @@ class FewshotDataset(Dataset):
         # choose background audio
         
         background_audio_fps = list(self.background_audio_info['raw_audio_fp'].sample(n=2, random_state=index))
-        background_audio_fps = [os.path.join(args.background_audio_dir, os.path.basename(x)) for x in background_audio_fps]
-        audio_support = load_audio(background_audio_fps[0], args.sr)
-        audio_query = load_audio(background_audio_fps[1], args.sr)
+        background_audio_fps = [os.path.join(self.args.background_audio_dir, os.path.basename(x)) for x in background_audio_fps]
+        audio_support = load_audio(background_audio_fps[0], self.args.sr)
+        audio_query = load_audio(background_audio_fps[1], self.args.sr)
         
         # loop and trim background audio to desired length
         
-        support_dur_samples = int(args.support_dur_sec * args.sr)
-        query_dur_samples = int(args.query_dur_sec * args.sr)
+        support_dur_samples = int(self.args.support_dur_sec * self.args.sr)
+        query_dur_samples = int(self.args.query_dur_sec * self.args.sr)
         
         if audio_support.size(0) < support_dur_samples:
             # corner case: support soundscape is not long enough. in this case, tile it to make it long enough
@@ -125,8 +125,8 @@ class FewshotDataset(Dataset):
             
             pseudovox_rate = self.get_pseudovox_rate(label, rng) # call rate per second
             
-            n_pseudovox_support = rng.poisson(pseudovox_rate*args.support_dur_sec)
-            n_pseudovox_query = rng.poisson(pseudovox_rate*args.query_dur_sec)
+            n_pseudovox_support = rng.poisson(pseudovox_rate*self.args.support_dur_sec)
+            n_pseudovox_query = rng.poisson(pseudovox_rate*self.args.query_dur_sec)
             
             if label == 2:
                 # Require minimum 1 focal call in support
@@ -148,7 +148,7 @@ class FewshotDataset(Dataset):
             # load the pseudovox and insert them
             
             for _, row in pseudovox_support.iterrows():
-                pseudovox = load_audio(os.path.join(args.pseudovox_audio_dir, os.path.basename(row['filepath'])), args.sr)
+                pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), self.args.sr)
                 
                 rms_pseudovox = torch.std(pseudovox)
                 
@@ -177,7 +177,7 @@ class FewshotDataset(Dataset):
                 support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
                 
             for _, row in pseudovox_query.iterrows():
-                pseudovox = load_audio(os.path.join(args.pseudovox_audio_dir, os.path.basename(row['filepath'])), args.sr)
+                pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), self.args.sr)
                 
                 rms_pseudovox = torch.std(pseudovox)
                 
@@ -217,19 +217,31 @@ class FewshotDataset(Dataset):
         return self.args.n_synthetic_examples
       
         
-        
-        
 def get_dataloader(args, shuffle = True):
     dataset = FewshotDataset(args)
-
-    train_dataloader = DataLoader(dataset,
+    # return DataLoader(dataset,
+    #                     batch_size=args.batch_size,
+    #                     shuffle=shuffle,
+    #                     num_workers=args.num_workers,
+    #                     pin_memory=True,
+    #                     drop_last = True)
+    #split into train and val
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    train_dataloader = DataLoader(train_dataset,
                                   batch_size=args.batch_size,
                                   shuffle=shuffle,
                                   num_workers=args.num_workers,
                                   pin_memory=True,
                                   drop_last = True)
-
-    return train_dataloader
+    val_dataloader = DataLoader(val_dataset,
+                                batch_size=args.batch_size,
+                                shuffle=shuffle,
+                                num_workers=args.num_workers,
+                                pin_memory=True,
+                                drop_last = True)
+    return train_dataloader, val_dataloader
 
 if __name__ == "__main__":
     # demo usage
@@ -276,7 +288,7 @@ if __name__ == "__main__":
     dataloader = get_dataloader(args, shuffle = False)
     
     for i, (audio, labels, label_mask) in enumerate(dataloader):
-        torchaudio.save(os.path.join(output_dir, f"audio_{i}.wav"), audio, args.sr)
+        torchaudio.save(os.path.join(output_dir, f"audio_{i}.wav"), audio, self.args.sr)
         np.save(os.path.join(output_dir, f"labels_{i}.npy"), labels.numpy())
         np.save(os.path.join(output_dir, f"label_mask_{i}.npy"), label_mask.numpy())
         
