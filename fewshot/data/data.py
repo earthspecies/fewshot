@@ -219,9 +219,6 @@ class FewshotDataset(Dataset):
     def __len__(self):
         return self.args.n_synthetic_examples
       
-        
-        
-        
 def get_dataloader(args, shuffle = True):
     dataset = FewshotDataset(args)
 
@@ -230,9 +227,43 @@ def get_dataloader(args, shuffle = True):
                                   shuffle=shuffle,
                                   num_workers=args.num_workers,
                                   pin_memory=True,
-                                  drop_last = True)
+                                  drop_last = False)
 
     return train_dataloader
+
+
+class InferenceDataset(Dataset):
+    def __init__(self, support_audio, support_labels, query_audio, args):
+        # dataloader for audio during few shot inference; 
+        # chunks query audio into pieces the be fed into model
+        # assumes audio and labels has already been padded if necessary
+        # support_audio (Tensor) : (support_dur_samples,)
+        # support_labels (Tensor) : (support_dur_samples,)
+        # query_audio (Tensor) : (query_dur_samples)
+        self.args = args
+        self.support_audio = support_audio
+        self.support_labels = support_labels
+        self.query_audio = query_audio
+        self.query_dur_samples = int(args.sr * args.query_dur_sec)
+        
+    def __getitem__(self, index):
+        return self.support_audio, self.support_labels, self.query_audio[index * self.query_dur_samples : (index+1) * self.query_dur_samples]
+    
+    def __len__(self):
+        return int(np.ceil(self.query_audio.size(0) / self.query_dur_samples))
+    
+def get_inference_dataloader(support_audio, support_labels, query_audio, args):
+    dataset = InferenceDataset(support_audio, support_labels, query_audio, args)
+    
+    inference_dataloader = DataLoader(dataset,
+                                      batch_size=args.batch_size,
+                                      shuffle=False,
+                                      num_workers=args.num_workers,
+                                      pin_memory=True,
+                                      drop_last=False,
+                                     )
+    return inference_dataloader
+
 
 if __name__ == "__main__":
     # demo usage

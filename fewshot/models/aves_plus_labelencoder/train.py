@@ -43,10 +43,21 @@ def main(args):
     
     model=FewShotModel(args)
     
+    if args.previous_checkpoint_fp is not None:
+        print(f"loading model weights from {args.previous_checkpoint_fp}")
+        cp = torch.load(args.previous_checkpoint_fp)
+        model.load_state_dict(cp["model_state_dict"])
+    
     ## Training
-    trained_model = train(model, args) 
+    model = train(model, args) 
     
     print("Training Complete!")
+
+#     Debugging inference
+#     from fewshot.models.aves_plus_labelencoder.inference import inference_dcase
+#     df = inference_dcase(model, args, '/home/jupyter/fewshot/data/DCASE2022_Development_Set/Development_Set/PB/BUK4_20161011_000804.wav', '/home/jupyter/fewshot/data/DCASE2022_Development_Set/Development_Set/PB/BUK4_20161011_000804.csv')
+#     df.to_csv('/home/jupyter/output_test.csv')
+    
     ## Evaluation
     # evaluate(trained_model, args)
 
@@ -92,11 +103,7 @@ def compute_metrics(logits, query_labels):
 
 def train(model, args):
     model = model.to(device)
-  
-    if args.previous_checkpoint_fp is not None:
-        print(f"loading model weights from {args.previous_checkpoint_fp}")
-        cp = torch.load(args.previous_checkpoint_fp)
-        model.load_state_dict(cp["model_state_dict"])
+    model.train()
   
     loss_fn = get_loss_fn(args)
   
