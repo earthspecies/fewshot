@@ -48,6 +48,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--min-cluster-size', type = int, default=10, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
     parser.add_argument('--cluster-column', type=str, default='birdnet_prediction', choices=['prediction', 'birdnet_prediction'], help="name of column in manifest to use for forming groups of calls")
+    parser.add_argument('--return-timestamps', type=bool, default=False, help="True to return timestamps from the dataloader")
     
     
     args = parser.parse_args(args)

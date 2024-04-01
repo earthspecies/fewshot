@@ -77,7 +77,7 @@ class FewshotDataset(Dataset):
             # corner case: support soundscape is not long enough. in this case, tile it to make it long enough
             audio_support =torch.tile(audio_support, (support_dur_samples//audio_support.size(0)+2,))
             
-        if audio_query.size(0) < query_dur_samples:
+        if audio_query.size(0) <= query_dur_samples:
             # corner case: query soundscape is not long enough. in this case, tile it to make it long enough
             audio_query =torch.tile(audio_query, (query_dur_samples//audio_query.size(0)+2,))
         
@@ -112,8 +112,11 @@ class FewshotDataset(Dataset):
             clusters_allowed = self.clusters_with_enough_examples
         
         clusters_to_possibly_include = list(clusters_allowed.sample(3, random_state=index))
+
         
         # add pseudovox into clips
+        pseudovox_timestamps_support = []
+        pseudovox_timestamps_query = []
         
         for i, label in enumerate([2,1,0]):
             # label semantics:
@@ -175,6 +178,12 @@ class FewshotDataset(Dataset):
                 
                 audio_support[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
+
+                pseudovox_end = min(pseudovox_start + pseudovox.size(0), support_dur_samples)
+
+                # Record the timestamp (convert from samples to seconds)
+
+                pseudovox_timestamps_support.append((pseudovox_start / self.args.sr, pseudovox_end / self.args.sr))
                 
             for _, row in pseudovox_query.iterrows():
                 pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), self.args.sr)
@@ -204,6 +213,12 @@ class FewshotDataset(Dataset):
                 
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
+
+        pseudovox_timestamps_support = sorted(pseudovox_timestamps_support, key=lambda x: x[0])  # Sort by start time
+        pseudovox_timestamps_query = sorted(pseudovox_timestamps_query, key=lambda x: x[0])  # Sort by start time
+
+        if self.args.return_timestamps:
+            return audio_support, support_labels, audio_query, query_labels, pseudovox_timestamps_support, pseudovox_timestamps_query
 
         return audio_support, support_labels, audio_query, query_labels
 
@@ -302,6 +317,7 @@ if __name__ == "__main__":
     parser.add_argument('--n-synthetic-examples', type=int, default=10, help="limit on number of unique examples the dataloader will generate; required by pytorch Dataloder")
     parser.add_argument('--support-dur-sec', type=float, default=30, help="dur of support audio fed into model")
     parser.add_argument('--query-dur-sec', type=float, default=6, help="dur of query audio fed into model")
+    parser.add_argument('--return-timestamps', type=bool, default=False, help="True to return timestamps from the dataloader")
     
     
     args = parser.parse_args(args)
