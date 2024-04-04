@@ -55,6 +55,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--snr-db-low', default=-4, type=float, help="low value of snr dB")
     parser.add_argument('--snr-db-high', default=2, type=float, help="high value of snr dB")
     parser.add_argument('--resample-rates', default="0.5,1.0,2.0", type=str, help="csv of factors to resample audio at, for augmentations")
+    parser.add_argument('--return-timestamps', type=bool, default=False, help="True to return timestamps from the dataloader")
     
     # Evaluation
     parser.add_argument('--dcase-ref-files-path', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set/", type=str, help="Path to parent dir of DCASE files to evaluate on")
