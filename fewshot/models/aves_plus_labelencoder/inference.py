@@ -12,13 +12,21 @@ from fewshot.data.data import get_inference_dataloader, load_audio
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def process_dcase(audio, annotations, args):
-    # TODO: UNK is not handled
-    print("UNK NOT HANDLED!!")
+    # TODO: UNK is not handled carefully
+    print("UNK ASSUMED POS!!")
     
     annot_pos = annotations[annotations["Q"] == "POS"].reset_index()
     annot_pos_support = annot_pos.iloc[:5] # grab first five pos examples
     annot_pos_support_np = np.zeros_like(audio)
+    pos_support_end = annot_pos_support["Endtime"].max()
     for i, row in annot_pos_support.iterrows():
+        start_sample = int(row['Starttime'] *args.sr)
+        end_sample = int(row['Endtime'] *args.sr)
+        annot_pos_support_np[start_sample:end_sample] = 2
+        
+    annot_unk = annotations[annotations["Q"] == "UNK"].reset_index()
+    annot_unk_support = annot_unk[annot_unk["Starttime"] <= pos_support_end]
+    for i, row in annot_unk_support.iterrows():
         start_sample = int(row['Starttime'] *args.sr)
         end_sample = int(row['Endtime'] *args.sr)
         annot_pos_support_np[start_sample:end_sample] = 2
@@ -37,10 +45,38 @@ def process_dcase(audio, annotations, args):
         support_annotations = looped_annotations[:support_dur_samples]
     
     else:
-        # if too long, take the last bit as support
-        print("NEED TO HANDLE LONG SUPPORT CLIPS BETTER")
-        support_audio = audio[support_end_sample-support_dur_samples:support_end_sample]
-        support_annotations = annot_pos_support_np[support_end_sample-support_dur_samples:support_end_sample]
+        rng = np.random.default_rng(args.seed)
+        # if too long, sample chunks from within the support clip. anchors are start points of chunks
+        n_support_anchors = 12
+        support_chunk_dur = args.support_dur_sec/n_support_anchors
+        pos_starts = annot_pos_support['Starttime'].values[:n_support_anchors]
+        support_anchor_starts = np.maximum(pos_starts-support_chunk_dur/2,np.zeros_like(pos_starts))
+        addl_starts = rng.uniform(0,support_end_time-support_chunk_dur,n_support_anchors-len(pos_starts))
+        support_anchor_starts=np.concatenate([support_anchor_starts, addl_starts])
+        support_anchor_ends=np.maximum(support_anchor_starts+support_chunk_dur,support_end_time)
+        support_audio = [audio[int(support_anchor_starts[i]*args.sr):int(support_anchor_ends[i]*args.sr)] for i in range(n_support_anchors)]
+        support_annotations = [annot_pos_support_np[int(support_anchor_starts[i]*args.sr):int(support_anchor_ends[i]*args.sr)] for i in range(n_support_anchors)]
+        shuffle=rng.permutation(np.arange(n_support_anchors))
+        support_audio=[support_audio[i] for i in shuffle]
+        support_annotations=[support_annotations[i] for i in shuffle]
+        support_audio = np.concatenate(support_audio)[:support_dur_samples]
+        support_annotations = np.concatenate(support_annotations)[:support_dur_samples]
+        if len(support_audio)<support_dur_samples:
+            # if the vocs were too close to the end we need to pad out some
+            support_audio=np.concatenate([audio[:support_dur_samples-len(support_audio)],support_audio])
+            support_annotations=np.concatenate([annot_pos_support_np[:support_dur_samples-len(support_annotations)],support_annotations])
+        
+        # check files:
+        # import soundfile as sf
+        # from matplotlib import pyplot as plt
+        # sf.write("/home/jupyter/example_support.wav", support_audio, args.sr)
+        # plt.plot(support_annotations)
+        # plt.savefig("/home/jupyter/example_support_annot.png")
+        # plt.close()
+        
+        # old version:
+        # support_audio = audio[support_end_sample-support_dur_samples:support_end_sample]
+        # support_annotations = annot_pos_support_np[support_end_sample-support_dur_samples:support_end_sample]
                 
     return support_audio, support_annotations, audio
 

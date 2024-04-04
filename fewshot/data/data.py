@@ -7,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch
 import torchaudio
 
+birdnet_nonbiological_labels = ["Engine", "Fireworks", "Gun", "Noise", "Siren"]
 
 def load_audio(fp, target_sr):
     audio, file_sr = torchaudio.load(fp)
@@ -37,37 +38,48 @@ class FewshotDataset(Dataset):
         # Subselect pseudovox to be used
         self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['duration_sec'] <= self.args.max_pseudovox_duration]
         self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['birdnet_confidence'] > self.args.birdnet_confidence_strict_lower_bound]
+        self.pseudovox_info = self.pseudovox_info[~self.pseudovox_info['birdnet_prediction'].isin(birdnet_nonbiological_labels)]
         self.clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info[self.args.cluster_column].value_counts()[self.pseudovox_info[self.args.cluster_column].value_counts() >= self.args.min_cluster_size].index))
+        
+        # Init augmentations
+        resample_rates = self.args.resample_rates.split(',')
+        self.resample_rates = [int(self.args.sr*float(x)) for x in resample_rates]
     
     def get_pseudovox_rate(self, label, rng):
         # return rate in pseudovox / second
         # hard-coded for now
         
         if label == 0:
-            return 5/30
+            return rng.choice([5/60, 5/30, 5/15])
         
         if label == 1:
             return 0
         
         if label == 2:
-            return 5/30
+            return rng.choice([5/60, 5/30, 5/15])
         
     def get_snr_db(self, label, rng):
         # return snr in dB
-        # hard coded for now
-        
-        return rng.uniform(0, 2)
+        return rng.uniform(self.args.snr_db_low, self.args.snr_db_high)
         
     def __getitem__(self, index):
         rng = np.random.default_rng(index)
-        
         # choose background audio
         
         background_audio_fps = list(self.background_audio_info['raw_audio_fp'].sample(n=2, random_state=index))
         background_audio_fps = [os.path.join(self.args.background_audio_dir, os.path.basename(x)) for x in background_audio_fps]
-        audio_support = load_audio(background_audio_fps[0], self.args.sr)
-        audio_query = load_audio(background_audio_fps[1], self.args.sr)
+        speed_adjust_rate = rng.choice(self.resample_rates)
+        audio_support = load_audio(background_audio_fps[0], speed_adjust_rate)
         
+        background_audio_query_domain_shift = rng.binomial(1, self.args.p_background_audio_query_domain_shift)
+        
+        if background_audio_query_domain_shift==1:
+            audio_query = load_audio(background_audio_fps[1], speed_adjust_rate)
+        else:
+            # if no domain shift, re-use background audio
+            audio_query = load_audio(background_audio_fps[0], speed_adjust_rate)
+
+                    
         # loop and trim background audio to desired length
         
         support_dur_samples = int(self.args.support_dur_sec * self.args.sr)
@@ -94,13 +106,13 @@ class FewshotDataset(Dataset):
         
         support_label_mask = torch.ones_like(audio_support) # model DOES see labels from support
         query_label_mask = torch.zeros_like(audio_query) # model DOES NOT see labels from query
-        
+                
         # normalize rms of support and query background audio
         
         rms_background_audio_support = torch.std(audio_support)
         if torch.std(audio_query) > 0:
             audio_query = audio_query * rms_background_audio_support / torch.std(audio_query)
-                             
+                                         
         # prepare which pseudovox to choose from, for adding to background audio
         
         pseudovox_from_here = self.pseudovox_info[self.pseudovox_info['raw_audio_fp'].isin(background_audio_fps)]
@@ -112,6 +124,10 @@ class FewshotDataset(Dataset):
             clusters_allowed = self.clusters_with_enough_examples
         
         clusters_to_possibly_include = list(clusters_allowed.sample(3, random_state=index))
+        
+        # special scenarios:
+        
+        scenario = rng.choice(['normal', 'fine_grained_amplitude'], p=[0.95, 0.05])
         
         # add pseudovox into clips
         
@@ -143,24 +159,27 @@ class FewshotDataset(Dataset):
             # Choose parameters for processing pseudovox by sampling from a distribution
             
             snr_db = self.get_snr_db(label, rng) # sample snr in dB
-            # TODO add others, e.g. pitch shift
+            speed_adjust_rate = rng.choice(self.resample_rates)
+            
+            if scenario=="fine_grained_amplitude" and label==0:
+                c=c_focal
+                snr_db=snr_db_focal-rng.uniform(2,4)
+                speed_adjust_rate = speed_adjust_rate_focal
+            
+            # Store info for focal, for special scenarios
+            
+            if label==2:
+                c_focal=c
+                snr_db_focal=snr_db
+                speed_adjust_rate_focal = speed_adjust_rate
             
             # load the pseudovox and insert them
-            
+                        
             for _, row in pseudovox_support.iterrows():
-                pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), self.args.sr)
+                pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), speed_adjust_rate)
                 
-                rms_pseudovox = torch.std(pseudovox)
-                
-                ##
-                # TODO: modify snr_db by some amount so it is not the same for each pseudovox in c
-                ##
-                
+                rms_pseudovox = torch.std(pseudovox)                
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
-                
-                ##
-                # TODO: augmentations for the pseudovox, e.g. pitch shift
-                ##
 
                 pseudovox_start = rng.integers(-pseudovox.size(0), support_dur_samples)
                 
@@ -177,19 +196,12 @@ class FewshotDataset(Dataset):
                 support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
                 
             for _, row in pseudovox_query.iterrows():
-                pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), self.args.sr)
+                pseudovox = load_audio(os.path.join(self.args.pseudovox_audio_dir, os.path.basename(row['filepath'])), speed_adjust_rate)
                 
                 rms_pseudovox = torch.std(pseudovox)
                 
-                ##
-                # TODO: modify snr_db by some amount so it is not the same for each pseudovox in c
-                ##
                 
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
-                                
-                ##
-                # TODO: augmentations for the pseudovox, e.g. pitch shift
-                ##
 
                 pseudovox_start = rng.integers(-pseudovox.size(0), query_dur_samples)
                 
@@ -205,16 +217,7 @@ class FewshotDataset(Dataset):
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
 
-        return audio_support, support_labels, audio_query, query_labels
-
-# OLD, DEMO USAGE
-#         # glue support and query together
-
-#         audio = torch.cat([audio_support, audio_query])
-#         labels = torch.cat([support_labels, query_labels])
-#         label_mask = torch.cat([support_label_mask, query_label_mask])
-
-#         return audio, labels, label_mask        
+        return audio_support, support_labels, audio_query, query_labels       
 
     def __len__(self):
         return self.args.n_synthetic_examples
@@ -294,15 +297,20 @@ if __name__ == "__main__":
     parser.add_argument('--max-pseudovox-duration', type=float, default=5, help= "the max dur in seconds that a pseudovox may be")
     parser.add_argument('--min-cluster-size', type = int, default=10, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
-    parser.add_argument('--cluster-column', type=str, default='prediction', choices=['prediction', 'birdnet_prediction'], help="name of column in manifest to use for forming groups of calls")
+    parser.add_argument('--cluster-column', type=str, default='birdnet_prediction', choices=['prediction', 'birdnet_prediction'], help="name of column in manifest to use for forming groups of calls")
     
     parser.add_argument('--sr', type=int, default=16000)
     parser.add_argument('--batch-size', type=int, default=1)
-    parser.add_argument('--num-workers', type=int, default=0)
-    parser.add_argument('--n-synthetic-examples', type=int, default=10, help="limit on number of unique examples the dataloader will generate; required by pytorch Dataloder")
+    parser.add_argument('--num-workers', type=int, default=8)
+    parser.add_argument('--n-synthetic-examples', type=int, default=25, help="limit on number of unique examples the dataloader will generate; required by pytorch Dataloder")
     parser.add_argument('--support-dur-sec', type=float, default=30, help="dur of support audio fed into model")
     parser.add_argument('--query-dur-sec', type=float, default=6, help="dur of query audio fed into model")
     
+    # Augmentations
+    parser.add_argument('--p-background-audio-query-domain-shift', default=0.5, type=float, help="probability of using a different clip for query background audio")
+    parser.add_argument('--snr-db-low', default=-4, type=float, help="low value of snr dB")
+    parser.add_argument('--snr-db-high', default=2, type=float, help="high value of snr dB")
+    parser.add_argument('--resample-rates', default="0.5,1.0,2.0", type=str, help="csv of factors to resample audio at, for augmentations")
     
     args = parser.parse_args(args)
     
@@ -311,5 +319,24 @@ if __name__ == "__main__":
     
     for i, (support_audio, support_labels, query_audio, query_labels) in enumerate(dataloader):
         torchaudio.save(os.path.join(output_dir, f"audio_{i}.wav"), torch.cat([support_audio, query_audio], dim=1), args.sr)
-        np.save(os.path.join(output_dir, f"labels_{i}.npy"), torch.cat([support_labels, query_labels], dim=1).numpy())        
+        np.save(os.path.join(output_dir, f"labels_{i}.npy"), torch.cat([support_labels, query_labels], dim=1).numpy())     
+        
+        #make selection table
+        labels=(torch.cat([support_labels, query_labels], dim=1).squeeze(0).numpy()==2)
+        starts = labels[1:] * ~labels[:-1]
+        starts = np.where(starts)[0] + 1
+
+        d = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : []}
+
+        for start in starts:
+            look_forward = labels[start:]
+            ends = np.where(~look_forward)[0]
+            if len(ends)>0:
+                end = start+np.amin(ends)
+                d["Begin Time (s)"].append(start/args.sr)
+                d["End Time (s)"].append(end/args.sr)
+                d["Annotation"].append("POS")
+
+        d = pd.DataFrame(d)
+        d.to_csv(os.path.join(output_dir, f"selection_table_{i}.txt"), sep='\t', index=False)
     

@@ -5,7 +5,7 @@ import os
 import json
 import numpy as np
 import csv
-import metrics
+from fewshot.dcase_evaluation import metrics
 from datetime import datetime
 import copy
 from scipy import stats
@@ -322,5 +322,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # print(args)
 
-    evaluate( args.pred_file, args.ref_files_path, args.team_name, args.dataset, args.savepath)
+    evaluate(args.pred_file, args.ref_files_path, args.team_name, args.dataset, args.savepath)
 

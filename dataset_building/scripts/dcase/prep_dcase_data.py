@@ -1,5 +1,5 @@
 '''
-Script to process original DCASE2022 Task 5 data, so that training data can be used for few shot evaluation
+Script to process original DCASE2022 or 2024 Task 5 data, so that training data can be used for few shot evaluation
 '''
 
 import os
@@ -8,7 +8,7 @@ from glob import glob
 import shutil
 
 def main():
-    DEV_SET_DIR='/home/jupyter/fewshot/data/DCASE2022_Development_Set'
+    DEV_SET_DIR='/home/jupyter/fewshot/data/Development_Set'
     
     target_dir = os.path.join(DEV_SET_DIR, "Development_Set")
     os.makedirs(target_dir, exist_ok=True)
@@ -17,7 +17,7 @@ def main():
     val_dir = os.path.join(DEV_SET_DIR, "Validation_Set")
     
     # copy val files
-    for dname in ["HB", "ME", "PB"]:
+    for dname in ["HB", "ME", "PB", "PB24", "PW", "RD"]:
         src = os.path.join(val_dir, dname)
         tgt = os.path.join(target_dir, dname)
         if not os.path.exists(tgt):
