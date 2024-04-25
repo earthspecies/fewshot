@@ -23,7 +23,7 @@ class AvesEmbedding(nn.Module):
         # self.model.load_state_dict(state_dict)
         # self.model.feature_extractor.requires_grad_(False)
         
-        bundle = torchaudio.pipelines.HUBERT_BASE
+        bundle = torchaudio.pipelines.WAV2VEC2_BASE
         self.model = bundle.get_model()
         
         self.sr=args.sr
@@ -49,59 +49,7 @@ class AvesEmbedding(nn.Module):
         for param in self.model.encoder.parameters():
             param.requires_grad = True
         self.model.feature_extractor.requires_grad_(True)
-
-class AvesEncoder(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.aves_embedding = AvesEmbedding(args)
-        self.args = args
-        self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
-
-    def forward(self, x):
-        """
-        Input
-            x (Tensor): (batch, time) (time at 16000 Hz, audio_sr)
-        Returns
-            x_encoded (Tensor): (batch, embedding_dim, time) (time at 50 Hz, aves_sr)
-        """
-
-        # chunk long audio into smaller pieces
-        # maybe better to do via a reshape? there is some tradeoff here
-        x_encoded = []
-
-        total_len_samples_x = x.size(1)
-        x = x-torch.mean(x,axis=1,keepdim=True)
-
-        for start_sample in range(0, total_len_samples_x, self.audio_chunk_size_samples):
-            x_sub = x[:,start_sample:start_sample+self.audio_chunk_size_samples]
-
-            if x_sub.size(1) % self.args.scale_factor != 0:
-                raise Exception("audio length is not divisible by scale factor")
-
-            expected_dur_output = x_sub.size(1)//self.args.scale_factor
-
-            feats = self.aves_embedding(x_sub)
-            feats = rearrange(feats, 'b t c -> b c t')
-
-            #aves may be off by 1 sample from expected
-            pad = expected_dur_output - feats.size(2)
-            if pad>0:
-                feats = F.pad(feats, (0,pad), mode='reflect')
-
-            x_encoded.append(feats)
-
-        x_encoded = torch.cat(x_encoded, dim=2)
-        if x_encoded.size(2) != total_len_samples_x / self.args.scale_factor:
-            raise Exception("Incorrect feature duration")
-
-        return x_encoded
-
-    def freeze(self):
-        self.aves_embedding.freeze()
-          
-    def unfreeze(self):
-        self.aves_embedding.unfreeze()
-
+        
 class LabelEncoder(nn.Module):
     def __init__(self, args):
         super().__init__()
@@ -109,7 +57,6 @@ class LabelEncoder(nn.Module):
         self.query_seq_len = int(args.query_dur_sec * args.sr / args.scale_factor)
         assert args.support_dur_sec * args.sr / args.scale_factor == self.support_seq_len
         assert args.query_dur_sec * args.sr / args.scale_factor == self.query_seq_len
-
         self.transformer = ContinuousTransformerWrapper(
             dim_in = args.embedding_dim + 4,
             dim_out = 512,
@@ -123,10 +70,13 @@ class LabelEncoder(nn.Module):
             )
         )
         self.label_embedding=torch.nn.Conv1d(4, 4, 1)
+        self.logits_head = nn.Conv1d(512, 1, 1)
+        self.confidences_head = nn.Conv1d(512, 1, 1)
         self.args = args
 
     def forward(self, encoded_support_audio, support_labels_downsampled, encoded_query_audio):
-        support_labels_downsampled=support_labels_downsampled.squeeze(1)
+        support_len = encoded_support_audio.size(2)
+        
         support_labels_downsampled=F.one_hot(support_labels_downsampled.long(), num_classes=4).float()
         support_labels_downsampled=rearrange(support_labels_downsampled, 'b t c -> b c t')
         
@@ -136,28 +86,71 @@ class LabelEncoder(nn.Module):
         
         support_labels_downsampled=self.label_embedding(support_labels_downsampled)
         query_masked_labels=self.label_embedding(query_masked_labels)
-
+        
         support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
         query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
-
+        
         transformer_input = torch.cat((support_cat, query_cat), dim = 2)
         transformer_input = rearrange(transformer_input, 'b c t -> b t c')
-
+        
         transformer_output = self.transformer(transformer_input)
         transformer_output = rearrange(transformer_output, 'b t c -> b c t')
-        out = transformer_output[:,:,self.support_seq_len:] # return only embedding for query
-        return out
+        
+        query_output = transformer_output[:,:,support_len:] # return only embedding for query
+        logits = self.logits_head(query_output).squeeze(1)
+        confidences = self.confidences_head(query_output).squeeze(1)
+        
+        return  logits, confidences # each output: (batch, query_time/scale_factor). 
+        
+class AvesEncoder(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.aves_embedding = AvesEmbedding(args)
+        self.args = args
 
+    def forward(self, x):
+        """
+        Input
+            x (Tensor): (batch, time) (time at 16000 Hz, audio_sr)
+        Returns
+            x_encoded (Tensor): (batch, embedding_dim, time) (time at 50 Hz, aves_sr)
+        """
+
+        # chunk long audio into smaller pieces
+        # maybe better to do via a reshape? there is some tradeoff here
+        x_encoded = []
+        
+        if x.size(1) % self.args.scale_factor != 0:
+            raise Exception("audio length is not divisible by scale factor")
+            
+        expected_dur_output = x.size(1)//self.args.scale_factor
+        
+        feats = self.aves_embedding(x)
+        feats = rearrange(feats, 'b t c -> b c t')
+
+        #embedding may be off by 1 sample from expected
+        pad = expected_dur_output - feats.size(2)
+        if pad>0:
+            feats = F.pad(feats, (0,pad), mode='reflect')
+            
+        return feats
+
+    def freeze(self):
+        self.aves_embedding.freeze()
+          
+    def unfreeze(self):
+        self.aves_embedding.unfreeze()
 
 class FewShotModel(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.audio_encoder = AvesEncoder(args)
         self.label_encoder = LabelEncoder(args)
-        self.prediction_head = nn.Conv1d(512, 1, 1)
         self.args = args
+        self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
+        # assert self.audio_chunk_size_samples % 2 == 0, "chunk size must be even, to allow for 50% windowing"
 
-    def forward(self, support_audio, support_labels, query_audio, query_labels=None):
+    def forward(self, support_audio, support_labels, query_audio, query_labels=None, temperature=1):
         """
         Input
             support_audio (Tensor): (batch, time) (at audio_sr)
@@ -168,35 +161,54 @@ class FewShotModel(nn.Module):
             logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
         """
         
-        support_normalization_factor = torch.mean(support_audio, dim=1,keepdim=True)
-        support_normalization_factor = torch.maximum(support_normalization_factor, torch.full_like(support_normalization_factor, 1e-6))
+        # pad and normalize audio
+        support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
+        if support_pad_len>0:
+            support_audio = F.pad(support_audio, (0,support_pad_len))
+            support_labels = F.pad(support_labels, (0,support_pad_len))
         
-        query_normalization_factor = torch.mean(query_audio, dim=1,keepdim=True)
-        query_normalization_factor = torch.maximum(query_normalization_factor, torch.full_like(query_normalization_factor, 1e-6))
+        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
         
-        encoded_support_audio = self.audio_encoder(support_audio/support_normalization_factor) # (batch, embedding_dim, time) (at audio_sr / scale factor). embedding_dim=768 for aves
-        encoded_query_audio = self.audio_encoder(query_audio/query_normalization_factor)
-
-        support_labels = torch.unsqueeze(support_labels, 1) # (batch, 1, time)
-        support_labels_downsampled = F.max_pool1d(support_labels, self.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
+        # encode audio and labels
+        query_logits = []
+        query_confidences = []
         
+        with torch.no_grad(): # don't backprop across query embedding, since it is duplicated so much will slow down & cause imbalance
+            query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
+            
+        support_len_samples = support_audio.size(1)
+        for start_sample in range(0, support_len_samples, self.audio_chunk_size_samples):
+            support_audio_sub = support_audio[:, start_sample:start_sample+self.audio_chunk_size_samples]
+            support_audio_sub_encoded = self.audio_encoder(support_audio_sub)
+            
+            support_labels_sub = support_labels[:, start_sample:start_sample+self.audio_chunk_size_samples]
+            support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1) # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
+            
+            l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
+            
+            query_logits.append(l)
+            query_confidences.append(c)
+            
+        query_logits = torch.stack(query_logits, 1)
+        query_confidences = torch.stack(query_confidences, 1)
+        
+        weights = torch.softmax(query_confidences*(1/temperature), dim=1)
+        weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
+        
+        # downsample query labels, for training
         if query_labels is not None:
             query_labels = torch.unsqueeze(query_labels, 1) # (batch, 1, time)
             query_labels = F.max_pool1d(query_labels, self.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
-            query_labels = torch.squeeze(query_labels, 1)
-
-        query_representation = self.label_encoder(encoded_support_audio, support_labels_downsampled, encoded_query_audio) # (batch, 512 , query_time/scale_factor). 
-
-        logits = self.prediction_head(query_representation) # (batch, 1, query_time/scale_factor)
-        logits = torch.squeeze(logits, dim=1) # (batch, query_time/scale_factor)
-
-        return logits, query_labels
+            query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
+        
+        return weighted_average_logits, query_labels
 
     def freeze_audio_encoder(self):
         self.audio_encoder.freeze()
           
     def unfreeze_audio_encoder(self):
         self.audio_encoder.unfreeze()
-
-
     

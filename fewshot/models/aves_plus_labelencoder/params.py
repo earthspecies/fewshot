@@ -12,7 +12,7 @@ def parse_args(args,allow_unknown=False):
     # General 
     parser.add_argument('--name', type = str, required=True)
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--project-dir', type=str, default="/home/jupyter/fewshot/projects/aves_plus_labelencoder_small")
+    parser.add_argument('--project-dir', type=str, default="/home/jupyter/fewshot/projects/aves_plus_labelencoder_med")
     parser.add_argument('--previous-checkpoint-fp', type=str, default=None, help="path to checkpoint of previously trained detection model")
     
     # Model
@@ -20,13 +20,13 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--aves-url', type=str, default = "https://storage.googleapis.com/esp-public-files/ported_aves/aves-base-bio.torchaudio.pt")
     parser.add_argument('--sr', type=int, default=16000)
     parser.add_argument('--scale-factor', type=int, default = 320, help = "downscaling performed by aves")
-    parser.add_argument('--audio-chunk-size-sec', type=float, default=6, help="chunk audio before passing into aves encoder")
+    parser.add_argument('--audio-chunk-size-sec', type=float, default=8, help="chunk audio before passing into aves encoder")
     parser.add_argument('--embedding-dim', type=int, default=768, help="dim of audio embedding computed by aves")
     parser.add_argument('--label-encoder-dim', type=int, default=512, help="dim of embeddings computed by label encoder attention layers. Default follows BERT Small")
     parser.add_argument('--label-encoder-depth', type=int, default=4, help="n of mhsa layers in transformer label encoder. Default follows BERT Small")
     parser.add_argument('--label-encoder-heads', type=int, default=8, help="n heads in each mhsa layer. note dim per head is dim/n heads. Default follows BERT Small")    
-    parser.add_argument('--support-dur-sec', type=float, default=30, help="dur of support audio fed into model")
-    parser.add_argument('--query-dur-sec', type=float, default=6, help="dur of query audio fed into model")
+    parser.add_argument('--support-dur-sec', type=float, default=32, help="dur of support audio fed into model")
+    parser.add_argument('--query-dur-sec', type=float, default=8, help="dur of query audio fed into model")
     
     # Training
     parser.add_argument('--batch-size', type=int, default=8)
@@ -39,23 +39,18 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--n-steps-warmup', type=int, default=10000)
     
     # Data
-    parser.add_argument('--background-audio-dir', type = str, default = '/home/jupyter/fewshot/data/data_small/audio_trimmed', help="path to dir with background audio")
-    parser.add_argument('--pseudovox-audio-dir', type = str, default = '/home/jupyter/fewshot/data/data_small/pseudovox', help="path to dir with pseudovox audio")
+    parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
+    parser.add_argument('--audioset-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/audioset_background_audio_info.csv')
+    parser.add_argument('--xeno-canto-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/xeno_canto_background_audio_info.csv')
+    parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_bio.csv')
+    parser.add_argument('--nonbio-pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_nonbio.csv')
     
-    parser.add_argument('--background-audio-info-fp', type = str, default='/home/jupyter/fewshot/data/data_small/background_audio_info.csv')
-    parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/fewshot/data/data_small/pseudovox_manifest_birdnet_filtered.csv')
     
-    parser.add_argument('--min-background-duration', type=float, default = 15, help = "the min dur in seconds that a file is allowed to be, in order for it to be used as background audio.")
-    parser.add_argument('--max-pseudovox-duration', type=float, default=5, help= "the max dur in seconds that a pseudovox may be")
-    parser.add_argument('--min-cluster-size', type = int, default=10, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
-    parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
-    parser.add_argument('--cluster-column', type=str, default='birdnet_prediction', choices=['prediction', 'birdnet_prediction'], help="name of column in manifest to use for forming groups of calls")
-    # Augmentations
-    parser.add_argument('--p-background-audio-query-domain-shift', default=0.5, type=float, help="probability of using a different clip for query background audio")
-    parser.add_argument('--snr-db-low', default=-4, type=float, help="low value of snr dB")
-    parser.add_argument('--snr-db-high', default=2, type=float, help="high value of snr dB")
-    parser.add_argument('--resample-rates', default="0.5,1.0,2.0", type=str, help="csv of factors to resample audio at, for augmentations")
-    parser.add_argument('--return-timestamps', type=bool, default=False, help="True to return timestamps from the dataloader")
+    parser.add_argument('--min-background-duration', type=float, default = 9, help = "the min dur in seconds that a file is allowed to be, in order for it to be used as background audio.")
+    parser.add_argument('--max-pseudovox-duration', type=float, default=6, help= "the max dur in seconds that a pseudovox may be")
+    parser.add_argument('--min-cluster-size', type = int, default=6, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--nonbio-min-cluster-size', type = int, default=6, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")    
     
     # Evaluation
     parser.add_argument('--dcase-ref-files-path', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set/", type=str, help="Path to parent dir of DCASE files to evaluate on")
