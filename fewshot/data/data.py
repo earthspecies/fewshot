@@ -89,8 +89,6 @@ class FewshotDataset(Dataset):
                 
         copy_support = rng.binomial(1, 0.01)
         
-        print(scenario)
-        
         # Background
             
         if scenario == "low_snr":
@@ -132,12 +130,15 @@ class FewshotDataset(Dataset):
         
         # Focal calls
         focal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
-        focal_pitch = rng.choice(["up", "same", "down"])
+        focal_pitch = None # don't pitch shift unless in fine-grained scenario
         focal_duration = rng.choice(["long", "same", "short"])
         focal_snr = rng.uniform(-5, 2)
         coarse_focal_c = coarse_clusters_to_possibly_include[2]
         focal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_focal_c]["fp_plus_prediction"].sample(1, random_state=index))[0]
         other_focal_c = focal_c # placeholder
+        
+        if (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
+            focal_pitch = rng.choice(["up", "same", "down"])
         
         if scenario == "low_snr":
             focal_snr = rng.uniform(-10, -5)
@@ -156,10 +157,10 @@ class FewshotDataset(Dataset):
             dur_min_sampled = focal_c_df['duration_sec'].min()
             dur_max_sampled = focal_c_df['duration_sec'].min()
             generalization_df = self.pseudovox_info[(self.pseudovox_info["birdnet_prediction"] == coarse_focal_c) & (self.pseudovox_info["duration_sec"] >= 0.75*dur_min_sampled) & (self.pseudovox_info["duration_sec"] <= 1.25*dur_max_sampled)]
-            
+                    
         # Nonfocal calls
         nonfocal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
-        nonfocal_pitch = rng.choice(["up", "same", "down"])
+        nonfocal_pitch = None
         nonfocal_duration = rng.choice(["long", "same", "short"])
         nonfocal_snr = rng.uniform(-10, 2)
         
@@ -272,13 +273,20 @@ class FewshotDataset(Dataset):
                 possible_pseudovox = self.nonbio_pseudovox_info[self.nonbio_pseudovox_info["fp_plus_prediction"] == c]
             else:
                 possible_pseudovox = self.pseudovox_info[self.pseudovox_info["fp_plus_prediction"] == c]
-
-            pseudovox_support = possible_pseudovox.sample(n=n_pseudovox_support, replace=True, random_state=index)
+            
             
             if (label == 2) & (scenario == "generalization_within_species"):
                 pseudovox_query = generalization_df.sample(n=n_pseudovox_query, replace=True, random_state=index+1)
             else:
                 pseudovox_query = possible_pseudovox.sample(n=n_pseudovox_query, replace=True, random_state=index+1)
+            
+            pseudovox_fps_in_query = list(pseudovox_query['pseudovox_audio_fp'].unique()) # don't re-use pseudovox from query in support
+            possible_pseudovox_not_in_query = possible_pseudovox[~possible_pseudovox['pseudovox_audio_fp'].isin(pseudovox_fps_in_query)]
+            
+            if len(possible_pseudovox_not_in_query) >= 2:
+                pseudovox_support = possible_pseudovox_not_in_query.sample(n=n_pseudovox_support, replace=True, random_state=index)
+            else:
+                pseudovox_support = possible_pseudovox.sample(n=n_pseudovox_support, replace=True, random_state=index)
             
             # load the pseudovox and insert them
             for _, row in pseudovox_support.iterrows():
@@ -289,24 +297,25 @@ class FewshotDataset(Dataset):
                 speed_adjust_rate = {"long" : int(2*self.args.sr), "same" : self.args.sr, "short" : int(0.5*self.args.sr)}[dur_aug]
                 pseudovox = load_audio(row['pseudovox_audio_fp'], speed_adjust_rate)
                 
-                with torch.no_grad():
-                    if dur_aug == "long":
-                        if pitch_aug == "same":
-                            pseudovox = self.shift_up(pseudovox)
-                        elif pitch_aug == "up":
-                            pseudovox = self.shift_up2(pseudovox)
+                if pitch_aug is not None:
+                    with torch.no_grad():
+                        if dur_aug == "long":
+                            if pitch_aug == "same":
+                                pseudovox = self.shift_up(pseudovox)
+                            elif pitch_aug == "up":
+                                pseudovox = self.shift_up2(pseudovox)
 
-                    if dur_aug == "same":
-                        if pitch_aug == "down":
-                            pseudovox = self.shift_down(pseudovox)
-                        elif pitch_aug == "up":
-                            pseudovox = self.shift_up(pseudovox)
-                            
-                    if dur_aug == "short":
-                        if pitch_aug == "same":
-                            pseudovox = self.shift_down(pseudovox)
-                        elif pitch_aug == "down":
-                            pseudovox = self.shift_down2(pseudovox)
+                        if dur_aug == "same":
+                            if pitch_aug == "down":
+                                pseudovox = self.shift_down(pseudovox)
+                            elif pitch_aug == "up":
+                                pseudovox = self.shift_up(pseudovox)
+
+                        if dur_aug == "short":
+                            if pitch_aug == "same":
+                                pseudovox = self.shift_down(pseudovox)
+                            elif pitch_aug == "down":
+                                pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
                 snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
@@ -335,24 +344,25 @@ class FewshotDataset(Dataset):
                 speed_adjust_rate = {"long" : int(2*self.args.sr), "same" : self.args.sr, "short": int(0.5*self.args.sr)}[dur_aug]
                 pseudovox = load_audio(row['pseudovox_audio_fp'], speed_adjust_rate)
                 
-                with torch.no_grad():
-                    if dur_aug == "long":
-                        if pitch_aug == "same":
-                            pseudovox = self.shift_up(pseudovox)
-                        elif pitch_aug == "up":
-                            pseudovox = self.shift_up2(pseudovox)
+                if pitch_aug is not None:
+                    with torch.no_grad():
+                        if dur_aug == "long":
+                            if pitch_aug == "same":
+                                pseudovox = self.shift_up(pseudovox)
+                            elif pitch_aug == "up":
+                                pseudovox = self.shift_up2(pseudovox)
 
-                    if dur_aug == "same":
-                        if pitch_aug == "down":
-                            pseudovox = self.shift_down(pseudovox)
-                        elif pitch_aug == "up":
-                            pseudovox = self.shift_up(pseudovox)
-                            
-                    if dur_aug == "short":
-                        if pitch_aug == "same":
-                            pseudovox = self.shift_down(pseudovox)
-                        elif pitch_aug == "down":
-                            pseudovox = self.shift_down2(pseudovox)
+                        if dur_aug == "same":
+                            if pitch_aug == "down":
+                                pseudovox = self.shift_down(pseudovox)
+                            elif pitch_aug == "up":
+                                pseudovox = self.shift_up(pseudovox)
+
+                        if dur_aug == "short":
+                            if pitch_aug == "same":
+                                pseudovox = self.shift_down(pseudovox)
+                            elif pitch_aug == "down":
+                                pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
                 snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
