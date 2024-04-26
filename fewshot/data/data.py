@@ -41,6 +41,7 @@ class FewshotDataset(Dataset):
         self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['birdnet_confidence'] > self.args.birdnet_confidence_strict_lower_bound]        
         
         self.fine_clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info["fp_plus_prediction"].value_counts()[self.pseudovox_info["fp_plus_prediction"].value_counts() >= self.args.min_cluster_size].index)) #fine clusters: birdnet label + origin file
+        self.pseudovox_info = self.pseudovox_info[self.pseudovox_info['fp_plus_prediction'].isin(self.fine_clusters_with_enough_examples)]
         
         self.coarse_clusters_with_enough_examples = pd.Series(sorted(self.pseudovox_info[self.pseudovox_info["fp_plus_prediction"].isin(list(self.fine_clusters_with_enough_examples))]["birdnet_prediction"].unique()))
         
@@ -48,10 +49,10 @@ class FewshotDataset(Dataset):
         self.nonbio_clusters_with_enough_examples = pd.Series(sorted(self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts()[self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts() >= self.args.nonbio_min_cluster_size].index))
         
         # Init augmentations
-        self.shift_up = torchaudio.transforms.PitchShift(16000, 12)
-        self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24)
-        self.shift_down = torchaudio.transforms.PitchShift(16000, -12)
-        self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24)
+        self.shift_up = torchaudio.transforms.PitchShift(16000, 12, n_fft=2048)
+        self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, n_fft=2048)
+        self.shift_down = torchaudio.transforms.PitchShift(16000, -12, n_fft=2048)
+        self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, n_fft=2048)
         
         # Init resamplers
         self.resamplers = {}
@@ -83,10 +84,12 @@ class FewshotDataset(Dataset):
         
         # Special scenario
         
-        scenario = rng.choice(["normal", "disjunction_cross_species", "disjunction_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], 
-                              p = [0.14, 0.2, 0.5, 0.1, 0.02, 0.02, 0.02])
-        
+        scenario = rng.choice(["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], 
+                              p = [0.1, 0.1, 0.2, 0.2, 0.1, 0.1, 0.1, 0.1])
+                
         copy_support = rng.binomial(1, 0.01)
+        
+        print(scenario)
         
         # Background
             
@@ -147,6 +150,12 @@ class FewshotDataset(Dataset):
         if scenario == "disjunction_within_species":
             other_focal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_focal_c]["fp_plus_prediction"].sample(1, random_state=index+1))[0]
             focal_rate = focal_rate / 2
+            
+        if scenario == "generalization_within_species":
+            focal_c_df = self.pseudovox_info[self.pseudovox_info["fp_plus_prediction"] == focal_c]
+            dur_min_sampled = focal_c_df['duration_sec'].min()
+            dur_max_sampled = focal_c_df['duration_sec'].min()
+            generalization_df = self.pseudovox_info[(self.pseudovox_info["birdnet_prediction"] == coarse_focal_c) & (self.pseudovox_info["duration_sec"] >= 0.75*dur_min_sampled) & (self.pseudovox_info["duration_sec"] <= 1.25*dur_max_sampled)]
             
         # Nonfocal calls
         nonfocal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
@@ -265,7 +274,11 @@ class FewshotDataset(Dataset):
                 possible_pseudovox = self.pseudovox_info[self.pseudovox_info["fp_plus_prediction"] == c]
 
             pseudovox_support = possible_pseudovox.sample(n=n_pseudovox_support, replace=True, random_state=index)
-            pseudovox_query = possible_pseudovox.sample(n=n_pseudovox_query, replace=True, random_state=index+1)
+            
+            if (label == 2) & (scenario == "generalization_within_species"):
+                pseudovox_query = generalization_df.sample(n=n_pseudovox_query, replace=True, random_state=index+1)
+            else:
+                pseudovox_query = possible_pseudovox.sample(n=n_pseudovox_query, replace=True, random_state=index+1)
             
             # load the pseudovox and insert them
             for _, row in pseudovox_support.iterrows():
