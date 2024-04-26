@@ -49,10 +49,10 @@ class FewshotDataset(Dataset):
         self.nonbio_clusters_with_enough_examples = pd.Series(sorted(self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts()[self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts() >= self.args.nonbio_min_cluster_size].index))
         
         # Init augmentations
-        self.shift_up = torchaudio.transforms.PitchShift(16000, 12, n_fft=2048)
-        self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, n_fft=2048)
-        self.shift_down = torchaudio.transforms.PitchShift(16000, -12, n_fft=2048)
-        self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, n_fft=2048)
+        self.shift_up = torchaudio.transforms.PitchShift(16000, 12, hop_length=64)
+        self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, hop_length=64)
+        self.shift_down = torchaudio.transforms.PitchShift(16000, -12, hop_length=64)
+        self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, hop_length=64)
         
         # Init resamplers
         self.resamplers = {}
