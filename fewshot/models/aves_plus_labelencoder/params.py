@@ -20,13 +20,13 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--aves-url', type=str, default = "https://storage.googleapis.com/esp-public-files/ported_aves/aves-base-bio.torchaudio.pt")
     parser.add_argument('--sr', type=int, default=16000)
     parser.add_argument('--scale-factor', type=int, default = 320, help = "downscaling performed by aves")
-    parser.add_argument('--audio-chunk-size-sec', type=float, default=8, help="chunk audio before passing into aves encoder")
+    parser.add_argument('--audio-chunk-size-sec', type=float, default=4, help="chunk audio before passing into aves encoder")
     parser.add_argument('--embedding-dim', type=int, default=768, help="dim of audio embedding computed by aves")
     parser.add_argument('--label-encoder-dim', type=int, default=512, help="dim of embeddings computed by label encoder attention layers. Default follows BERT Small")
     parser.add_argument('--label-encoder-depth', type=int, default=4, help="n of mhsa layers in transformer label encoder. Default follows BERT Small")
     parser.add_argument('--label-encoder-heads', type=int, default=8, help="n heads in each mhsa layer. note dim per head is dim/n heads. Default follows BERT Small")    
-    parser.add_argument('--support-dur-sec', type=float, default=32, help="dur of support audio fed into model")
-    parser.add_argument('--query-dur-sec', type=float, default=8, help="dur of query audio fed into model")
+    parser.add_argument('--support-dur-sec', type=float, default=24, help="dur of support audio fed into model")
+    parser.add_argument('--query-dur-sec', type=float, default=4, help="dur of query audio fed into model")
     
     # Training
     parser.add_argument('--batch-size', type=int, default=8)
@@ -46,15 +46,20 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--nonbio-pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_nonbio.csv')
     
     
-    parser.add_argument('--min-background-duration', type=float, default = 9, help = "the min dur in seconds that a file is allowed to be, in order for it to be used as background audio.")
-    parser.add_argument('--max-pseudovox-duration', type=float, default=6, help= "the max dur in seconds that a pseudovox may be")
+    parser.add_argument('--min-background-duration', type=float, default = 6, help = "the min dur in seconds that a file is allowed to be, in order for it to be used as background audio.")
+    parser.add_argument('--max-pseudovox-duration', type=float, default=12, help= "the max dur in seconds that a pseudovox may be")
     parser.add_argument('--min-cluster-size', type = int, default=6, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--min-cluster-size-for-longish-pseudovox', type = int, default=2, help = "the min cluster size when a pseudovox is >=1 sec long, we allow this because there aren't that many of them")
     parser.add_argument('--nonbio-min-cluster-size', type = int, default=6, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")    
     
     # Evaluation
     parser.add_argument('--dcase-ref-files-path', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set/", type=str, help="Path to parent dir of DCASE files to evaluate on")
     parser.add_argument('--dcase-evaluation-manifest-fp', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set_manifest.csv", type=str, help="Path to manifest of DCASE files to evaluate on")
+    parser.add_argument('--inference-temperature', default = 1, type=float, help="softmax temp during inference. If <0 will adapt to support length, the exact negative value doesn't matter")
+    parser.add_argument('--inference-threshold', default = 0, type=float, help = "logit threshold to count as positive")
+    parser.add_argument('--inference-n-chunks-to-keep', default=10, type=int, help="longer means support during inference will be longer")
+    parser.add_argument('--inference-chunk-size-sec', default =16, type=float, help ="duration of audio chunks included in support")
     
     args = parser.parse_args(args)
     

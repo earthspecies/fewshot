@@ -71,7 +71,7 @@ class LabelEncoder(nn.Module):
         )
         self.label_embedding=torch.nn.Conv1d(4, 4, 1)
         self.logits_head = nn.Conv1d(512, 1, 1)
-        self.confidences_head = nn.Conv1d(512, 1, 1)
+        # self.confidences_head = nn.Conv1d(512, 64, 1)
         self.args = args
 
     def forward(self, encoded_support_audio, support_labels_downsampled, encoded_query_audio):
@@ -98,7 +98,7 @@ class LabelEncoder(nn.Module):
         
         query_output = transformer_output[:,:,support_len:] # return only embedding for query
         logits = self.logits_head(query_output).squeeze(1)
-        confidences = self.confidences_head(query_output).squeeze(1)
+        confidences = rearrange(query_output, 'b c t -> b t c')
         
         return  logits, confidences # each output: (batch, query_time/scale_factor). 
         
@@ -148,6 +148,17 @@ class FewShotModel(nn.Module):
         self.label_encoder = LabelEncoder(args)
         self.args = args
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
+        self.confidence_transformer = ContinuousTransformerWrapper(
+            dim_in = 512,
+            dim_out = 1,
+            max_seq_len = 0,
+            use_abs_pos_emb = True,
+            attn_layers = Encoder(
+                dim = 64,
+                depth = 1,
+                heads = 2,
+            )
+        )
         # assert self.audio_chunk_size_samples % 2 == 0, "chunk size must be even, to allow for 50% windowing"
 
     def forward(self, support_audio, support_labels, query_audio, query_labels=None, temperature=1):
@@ -176,8 +187,9 @@ class FewShotModel(nn.Module):
         query_logits = []
         query_confidences = []
         
-        with torch.no_grad(): # don't backprop across query embedding, since it is duplicated so much will slow down & cause imbalance
-            query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
+        # with torch.no_grad(): # don't backprop across query embedding, since it is duplicated so much will slow down & cause imbalance
+        #     query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
+        query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
             
         support_len_samples = support_audio.size(1)
         for start_sample in range(0, support_len_samples, self.audio_chunk_size_samples):
@@ -189,11 +201,19 @@ class FewShotModel(nn.Module):
             
             l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
             
+            c_shape = c.size() # b t c
+            
             query_logits.append(l)
+            c = torch.reshape(c, (-1, c_shape[2]))
             query_confidences.append(c)
             
         query_logits = torch.stack(query_logits, 1)
-        query_confidences = torch.stack(query_confidences, 1)
+        query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+        
+        query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
+        query_confidences = query_confidences.squeeze(2)
+        query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
+        query_confidences = rearrange(query_confidences, 'b t c -> b c t')
         
         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)

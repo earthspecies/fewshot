@@ -14,10 +14,12 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def process_dcase(audio, annotations, args):
     # TODO: UNK is not handled carefully
     # TODO: How to handle extremely long support?
-    print("UNK ASSUMED POS!!")
+    # print("UNK ASSUMED POS!!")
     
     rng = np.random.default_rng(0)
-    
+        
+    annotations = annotations.sort_values(by="Starttime").reset_index()
+        
     annot_pos = annotations[annotations["Q"] == "POS"].reset_index()
     annot_pos_support = annot_pos.iloc[:5] # grab first five pos examples
     annot_pos_support_tensor = torch.zeros_like(audio)
@@ -41,17 +43,17 @@ def process_dcase(audio, annotations, args):
     support_annotations = annot_pos_support_tensor[:support_end_sample]
     
     # Sub-select from support audio so we don't end up with hours
-    chunk_size_sec = 30
-    chunk_size_samples = int(args.sr * chunk_size_sec)
-    max_n_chunks_to_keep = 10
+    # chunk_size_sec = args.support_dur_sec
+    chunk_size_samples = int(args.sr * args.inference_chunk_size_sec)
+    max_n_chunks_to_keep = args.inference_n_chunks_to_keep
     
     chunks_to_keep = []
     chunks_to_maybe_keep = []
     
     for chunk_start in np.arange(0, support_end_sample, chunk_size_samples):
         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
-        annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start) & (annot_pos['Starttime'] < chunk_end)]
-        annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start) & (annot_pos['Endtime'] < chunk_end)]
+        annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/args.sr) & (annot_pos['Starttime'] < chunk_end/args.sr)]
+        annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/args.sr) & (annot_pos['Endtime'] < chunk_end/args.sr)]
         if len(annot_pos_start_sub) + len(annot_pos_end_sub)>0:
             chunks_to_keep.append(chunk_start)
         else:
@@ -74,11 +76,15 @@ def process_dcase(audio, annotations, args):
     support_audio = torch.cat(support_audio_new)
     support_annotations = torch.cat(support_annot_new)
     
+    query_audio = audio[support_end_sample:]
+            
     assert len(support_audio) == len(support_annotations)
     
     print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/args.sr}")
     
-    return support_audio, support_annotations, audio
+    min_vox_dur_support = (annot_pos_support["Endtime"] - annot_pos_support["Starttime"]).min()
+    
+    return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support
 
 def fill_holes(m, max_hole):
     stops = m[:-1] * ~m[1:]
@@ -113,18 +119,24 @@ def delete_short(m, min_pos):
     return m
     
 
-def postprocess(all_query_predictions, audio_fp, args):
+def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support):
     pred_sr = args.sr // args.scale_factor
     audio_fn = os.path.basename(audio_fp)
     
-    all_query_predictions_binary = all_query_predictions >= 0 # TODO
+    all_query_predictions_binary = all_query_predictions >= args.inference_threshold # TODO
     
     # fill gaps and omit extremely short predictions
-    preds = fill_holes(all_query_predictions_binary, int(pred_sr*.1))
-    preds = delete_short(preds, int(pred_sr*.03))
+    max_hole_size_sec = 0.2
+    min_vox_dur_sec = min(0.5, 0.25*min_vox_dur_support)
+    
+    preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
+    preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
     
     starts = preds[1:] * ~preds[:-1]
     starts = np.where(starts)[0] + 1
+    
+    if preds[0]:
+        starts = np.concatenate(np.zeros(1,), starts)
     
     d = {"Audiofilename" : [], "Starttime" : [], "Endtime" : []}
     
@@ -133,9 +145,11 @@ def postprocess(all_query_predictions, audio_fp, args):
         ends = np.where(~look_forward)[0]
         if len(ends)>0:
             end = start+np.amin(ends)
-            d["Audiofilename"].append(audio_fn)
-            d["Starttime"].append(start/pred_sr)
-            d["Endtime"].append(end/pred_sr)
+        else:
+            end = len(preds)-1
+        d["Audiofilename"].append(audio_fn)
+        d["Starttime"].append(start/pred_sr + time_shift_sec)
+        d["Endtime"].append(end/pred_sr + time_shift_sec)
             
     d = pd.DataFrame(d)
     
@@ -159,7 +173,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
-        support_audio, support_annotations, query_audio = process_dcase(audio, annotations, args)
+        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
         
         # pad etc
         
@@ -168,7 +182,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         support_dur_samples = support_audio.size(0)
         
         assert model.audio_chunk_size_samples % 2 == 0
-        assert support_dur_samples >= model.audio_chunk_size_samples
+        assert support_dur_samples >= model.audio_chunk_size_samples//2
         
         remainder = support_dur_samples % model.audio_chunk_size_samples
         if remainder >= model.audio_chunk_size_samples//2:
@@ -192,15 +206,21 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         query_pad = (query_dur_samples - (query_audio.size(0) % query_dur_samples)) % query_dur_samples
         if query_pad>0:
             query_audio = F.pad(query_audio, (0,query_pad))
+        
        
         assert len(support_annotations) == len(support_audio)
         inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)
 
         all_query_predictions = []
+        
+        if args.inference_temperature <0:
+            temperature= (args.support_dur_sec//args.audio_chunk_size_sec)/len(inference_dataloader) # adjust from training to inference by decreasing temp for long clips
+        else:
+            temperature=args.inference_temperature
         with torch.no_grad():
             for i, data_item in tqdm(enumerate(inference_dataloader)):
                 sa, sl, qa = data_item
-                query_predictions, _ = model(sa.to(device), sl.to(device), qa.to(device), temperature=1) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
+                query_predictions, _ = model(sa.to(device), sl.to(device), qa.to(device), temperature=temperature) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
                 all_query_predictions.append(query_predictions)
         
         all_query_predictions = torch.cat(all_query_predictions, dim=0)
@@ -218,7 +238,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         fn = os.path.basename(audio_fp)
         np.save(os.path.join(args.experiment_dir, fn[:-4]+".npy"), all_query_predictions)
     
-    d = postprocess(all_query_predictions, audio_fp, args)
+    d = postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support)
     
     # Save raven st
     st = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : []}
