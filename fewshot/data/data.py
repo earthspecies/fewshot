@@ -59,6 +59,7 @@ class FewshotDataset(Dataset):
         self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, hop_length=64)
         self.shift_down = torchaudio.transforms.PitchShift(16000, -12, hop_length=64)
         self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, hop_length=64)
+        self.scenarios = self.args.scenarios.split(',')
         
         # Init resamplers
         self.resamplers = {}
@@ -90,8 +91,10 @@ class FewshotDataset(Dataset):
         
         # Special scenario
         
-        scenario = rng.choice(["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], 
-                              p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
+        
+        scenario = rng.choice(self.scenarios)
+            
+        # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
                 
         copy_support = 0 #rng.binomial(1, 0.01)
         
@@ -492,6 +495,7 @@ if __name__ == "__main__":
     parser.add_argument('--min-cluster-size-for-longish-pseudovox', type = int, default=2, help = "the min cluster size when a pseudovox is >=1 sec long, we allow this because there aren't that many of them")
     parser.add_argument('--nonbio-min-cluster-size', type = int, default=6, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
+    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration", help = "csv of scenarios to choose from for constructing examples")
     
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
     parser.add_argument('--audioset-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/audioset_background_audio_info.csv')
