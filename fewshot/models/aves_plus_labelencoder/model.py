@@ -152,13 +152,18 @@ class FewShotModel(nn.Module):
             dim_in = 512,
             dim_out = 1,
             max_seq_len = 0,
-            use_abs_pos_emb = True,
+            use_abs_pos_emb = False,
             attn_layers = Encoder(
-                dim = 64,
-                depth = 1,
+                dim = 128,
+                depth = 2,
                 heads = 2,
             )
         )
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+         
+        cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
+        self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
         # assert self.audio_chunk_size_samples % 2 == 0, "chunk size must be even, to allow for 50% windowing"
 
     def forward(self, support_audio, support_labels, query_audio, query_labels=None, temperature=1):
@@ -206,17 +211,26 @@ class FewShotModel(nn.Module):
             query_logits.append(l)
             c = torch.reshape(c, (-1, c_shape[2]))
             query_confidences.append(c)
-            
-        query_logits = torch.stack(query_logits, 1)
+        
         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+        cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
+        query_confidences = torch.cat([cls_token, query_confidences], dim=1)
+        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
+        query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
+        weighted_average_logits=query_logits
         
-        query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
-        query_confidences = query_confidences.squeeze(2)
-        query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-        query_confidences = rearrange(query_confidences, 'b t c -> b c t')
         
-        weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-        weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
+        
+#         query_logits = torch.stack(query_logits, 1)
+#         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+        
+#         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
+#         query_confidences = query_confidences.squeeze(2)
+#         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
+#         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
+        
+#         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
+#         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
         
         # downsample query labels, for training
         if query_labels is not None:

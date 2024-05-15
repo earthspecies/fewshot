@@ -93,6 +93,7 @@ class FewshotDataset(Dataset):
         
         
         scenario = rng.choice(self.scenarios)
+        print(scenario)
             
         # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
                 
@@ -525,6 +526,8 @@ if __name__ == "__main__":
                 d["Begin Time (s)"].append(start/args.sr)
                 d["End Time (s)"].append(end/args.sr)
                 d["Annotation"].append("POS")
+            else:
+                end = len(labels)-1
                 
         if labels[0]:
             start = 0
@@ -535,6 +538,8 @@ if __name__ == "__main__":
                 d["Begin Time (s)"].append(start/args.sr)
                 d["End Time (s)"].append(end/args.sr)
                 d["Annotation"].append("POS")
+            else:
+                end = len(labels)-1
 
         d = pd.DataFrame(d)
         d.to_csv(os.path.join(output_dir, f"selection_table_{i}.txt"), sep='\t', index=False)

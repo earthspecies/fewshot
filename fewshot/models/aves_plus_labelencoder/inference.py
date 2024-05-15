@@ -5,6 +5,7 @@ from torch.nn import functional as F
 import pandas as pd
 import os
 from tqdm import tqdm
+from einops import rearrange
 
 from fewshot.data.data import get_inference_dataloader, load_audio
 
@@ -119,15 +120,18 @@ def delete_short(m, min_pos):
     return m
     
 
-def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support):
+def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, threshold=None):
     pred_sr = args.sr // args.scale_factor
     audio_fn = os.path.basename(audio_fp)
     
-    all_query_predictions_binary = all_query_predictions >= args.inference_threshold # TODO
+    if threshold == None:
+        all_query_predictions_binary = all_query_predictions >= args.inference_threshold # TODO
+    else:
+        all_query_predictions_binary = all_query_predictions >= threshold
     
     # fill gaps and omit extremely short predictions
-    max_hole_size_sec = 0.2
-    min_vox_dur_sec = min(0.5, 0.25*min_vox_dur_support)
+    max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
+    min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
     
     preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
     preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
@@ -155,6 +159,97 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
     
     return d
 
+def cache_support_encoded(model, support_audio):
+    
+    # pad and normalize audio
+    support_pad_len = (model.audio_chunk_size_samples - support_audio.size(1) % model.audio_chunk_size_samples) % model.audio_chunk_size_samples
+    if support_pad_len>0:
+        support_audio = F.pad(support_audio, (0,support_pad_len))
+        
+    normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+    normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+    support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+    
+    support_len_samples = support_audio.size(1)
+    
+    support_audio_subs_encoded = []
+    start_samples = []
+    
+    for start_sample in range(0, support_len_samples, model.audio_chunk_size_samples):
+        support_audio_sub = support_audio[:, start_sample:start_sample+model.audio_chunk_size_samples]
+        support_audio_sub_encoded = model.audio_encoder(support_audio_sub)
+        support_audio_subs_encoded.append(support_audio_sub_encoded)
+        start_samples.append(start_sample)
+        
+    return support_audio_subs_encoded, start_samples
+
+
+def forward_cached(model, support_audio, support_audio_encoded, start_samples, support_labels, query_audio, query_labels=None, temperature=1):
+    """
+    Input
+        support_audio (Tensor): (batch, time) (at audio_sr)
+        support_labels (Tensor): (batch, time) (at audio_sr)
+        query_audio (Tensor): (batch, time) (at audio_sr)
+        query_labels (Tensor): (batch, time) (at audio_sr)
+    Output
+        logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
+    """
+
+    # pad and normalize audio
+    support_pad_len = (model.audio_chunk_size_samples - support_audio.size(1) % model.audio_chunk_size_samples) % model.audio_chunk_size_samples
+    if support_pad_len>0:
+        support_labels = F.pad(support_labels, (0,support_pad_len))
+
+    normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+    normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+    query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+
+    # encode audio and labels
+    query_logits = []
+    query_confidences = []
+
+    query_audio_encoded = model.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
+    
+    for support_audio_sub_encoded, start_sample in zip(support_audio_encoded, start_samples):
+        support_audio_sub_encoded = support_audio_sub_encoded[:query_audio_encoded.size(0),...]
+        
+        support_labels_sub = support_labels[:, start_sample:start_sample+model.audio_chunk_size_samples]
+        support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), model.args.scale_factor, padding=0).squeeze(1) # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
+
+        l, c = model.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
+
+        c_shape = c.size() # b t c
+
+        query_logits.append(l)
+        c = torch.reshape(c, (-1, c_shape[2]))
+        query_confidences.append(c)
+        
+    query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+    cls_token = model.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
+    query_confidences = torch.cat([cls_token, query_confidences], dim=1)
+    query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
+    query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
+    weighted_average_logits=query_logits
+
+#     query_logits = torch.stack(query_logits, 1)
+#     query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+
+#     query_confidences = model.confidence_transformer(query_confidences) # bt n_support 1
+#     query_confidences = query_confidences.squeeze(2)
+#     query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
+#     query_confidences = rearrange(query_confidences, 'b t c -> b c t')
+
+#     weights = torch.softmax(query_confidences*(1/temperature), dim=1)
+#     weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
+
+    # downsample query labels, for training
+    if query_labels is not None:
+        query_labels = torch.unsqueeze(query_labels, 1) # (batch, 1, time)
+        query_labels = F.max_pool1d(query_labels, model.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
+        query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
+
+    return weighted_average_logits, query_labels
+
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
     
@@ -162,7 +257,11 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
     
     # loading for speedup
     np_fp = os.path.join(args.experiment_dir, fn[:-4]+".npy")
-    if False: #os.path.exists(np_fp):
+    if os.path.exists(np_fp):
+        audio = load_audio(audio_fp, args.sr)
+        annotations = pd.read_csv(annotations_fp)
+
+        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
         all_query_predictions = np.load(np_fp)
     #
         
@@ -209,19 +308,31 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         
        
         assert len(support_annotations) == len(support_audio)
+        
         inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)
-
         all_query_predictions = []
+        
+        ##
+        support_dataloader = get_inference_dataloader(support_audio, support_annotations, support_audio, args)
+        all_support_predictions = []
+        ##
         
         if args.inference_temperature <0:
             temperature= (args.support_dur_sec//args.audio_chunk_size_sec)/len(inference_dataloader) # adjust from training to inference by decreasing temp for long clips
         else:
             temperature=args.inference_temperature
         with torch.no_grad():
+            cached_support_encoded = None
             for i, data_item in tqdm(enumerate(inference_dataloader)):
                 sa, sl, qa = data_item
-                query_predictions, _ = model(sa.to(device), sl.to(device), qa.to(device), temperature=temperature) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
+                sa = sa.to(device)
+                
+                if cached_support_encoded is None:
+                    cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device))
+                
+                query_predictions, _ = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), temperature=temperature) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
                 all_query_predictions.append(query_predictions)
+        
         
         all_query_predictions = torch.cat(all_query_predictions, dim=0)
         assert all_query_predictions.size(1) % 4 == 0
@@ -233,7 +344,43 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         #remove query padding        
         if query_pad // args.scale_factor > 0:
             all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)] # omit predictions for padded region at end of query
-
+        
+#         ##
+#         with torch.no_grad():
+#             for i, data_item in tqdm(enumerate(support_dataloader)):
+#                 sa, sl, sqa = data_item
+#                 sa = sa.to(device)
+                
+#                 support_predictions, support_labels_downsampled = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), sqa.to(device), temperature=temperature, query_labels=sl.to(device)) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
+#                 all_support_predictions.append(support_predictions)
+        
+#         all_support_predictions = torch.cat(all_support_predictions, dim=0)
+#         assert all_support_predictions.size(1) % 4 == 0
+#         quarter_window = all_support_predictions.size(1)//4
+        
+#         all_support_predictions_windowed = torch.reshape(all_support_predictions[:, quarter_window:-quarter_window], (-1,))
+#         all_support_predictions = torch.cat((all_support_predictions[0,:quarter_window], all_support_predictions_windowed, all_support_predictions[-1,-quarter_window:])).cpu().numpy()   
+        
+#         support_labels_downsampled = support_labels_downsampled[0,:].cpu().numpy()
+            
+#         fn = os.path.basename(audio_fp)
+#         np.save(os.path.join(args.experiment_dir, fn[:-4]+"_support_predictions.npy"), all_support_predictions)
+                
+#         support_pos = all_support_predictions[support_labels_downsampled ==2]
+#         support_neg = all_support_predictions[support_labels_downsampled ==0]
+        
+#         avg_pos = np.median(support_pos)
+#         avg_neg = np.median(support_neg)
+#         print(avg_pos)
+        
+# #         threshold_learned = (avg_pos+avg_neg)/2
+        
+#         threshold_learned = avg_pos - 0.1*(avg_pos-avg_neg)
+#         # threshold_learned=0
+#         print(threshold_learned)
+        
+#         ##
+        
         # save np array of predictions
         fn = os.path.basename(audio_fp)
         np.save(os.path.join(args.experiment_dir, fn[:-4]+".npy"), all_query_predictions)
