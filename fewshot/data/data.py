@@ -93,7 +93,6 @@ class FewshotDataset(Dataset):
         
         
         scenario = rng.choice(self.scenarios)
-        print(scenario)
             
         # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
                 
@@ -115,13 +114,13 @@ class FewshotDataset(Dataset):
         
         # Support background
         support_background_fp = background_fps[0]
-        support_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.25, 0.5, 0.25])
+        support_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
         
         # Query background
         background_audio_query_domain_shift = rng.binomial(1, 0.5)
         
         if background_audio_query_domain_shift:
-            query_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.25, 0.5, 0.25])
+            query_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
             query_background_fp = background_fps[1]
         else:
             query_background_resample = support_background_resample
@@ -215,6 +214,23 @@ class FewshotDataset(Dataset):
             nonfocal_c = focal_c
             use_nonbio_as_nonfocal = False # overwrite
             nonfocal_time_reverse = focal_time_reverse
+            
+        if scenario == "fine_grained_general":
+            nonfocal_rate = focal_rate
+            nonfocal_pitch = focal_pitch
+            nonfocal_duration = focal_duration
+            nonfocal_snr = focal_snr
+            use_nonbio_as_nonfocal = False # overwrite
+            nonfocal_time_reverse = focal_time_reverse
+            
+            # look for sounds of similar duration
+            focal_c_df = self.pseudovox_info[self.pseudovox_info["fp_plus_prediction"] == focal_c]
+            dur_min_sampled = focal_c_df['duration_sec'].min()
+            dur_max_sampled = focal_c_df['duration_sec'].min()
+            similar_sounds_df = self.pseudovox_info[(self.pseudovox_info["birdnet_prediction"] != coarse_focal_c) & (self.pseudovox_info["duration_sec"] >= 0.75*dur_min_sampled) & (self.pseudovox_info["duration_sec"] <= 1.25*dur_max_sampled)]
+            if len(similar_sounds_df)>0:
+                coarse_nonfocal_c = list(similar_sounds_df["birdnet_prediction"].sample(1, random_state=index))[0]
+                nonfocal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_nonfocal_c]["fp_plus_prediction"].sample(1, random_state=index))[0]
         
         # Load background_audio
         
@@ -272,14 +288,18 @@ class FewshotDataset(Dataset):
             n_pseudovox_query = rng.poisson(pseudovox_rate*self.args.query_dur_sec)
             
             if label == 2:
-                # Require minimum 2 focal call in support
+                # Require minimum 1 focal call in support
                 n_pseudovox_support = max(n_pseudovox_support, 1)
-                if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
-                    n_pseudovox_support = max(n_pseudovox_support, 2)
+                # if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
+                #     n_pseudovox_support = max(n_pseudovox_support, 1)
+                    
+                # Increase rate in query to reduce number of empty examples
+                floor_query = rng.choice([0,1],p=[.75, .25])
+                n_pseudovox_query = max(n_pseudovox_query, floor_query)
                 
             if label == 0:
-                if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
-                    n_pseudovox_support = max(n_pseudovox_support, 2)
+                if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration") or (scenario == "fine_grained_general"):
+                    n_pseudovox_support = max(n_pseudovox_support, 1)
             
             # get the exact pseudovox to insert
             c = {2.1: other_focal_c, 2: focal_c, 0:nonfocal_c}[s]
@@ -492,11 +512,11 @@ if __name__ == "__main__":
     parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_bio.csv')
     parser.add_argument('--nonbio-pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_nonbio.csv')
     parser.add_argument('--max-pseudovox-duration', type=float, default=12, help= "the max dur in seconds that a pseudovox may be")
-    parser.add_argument('--min-cluster-size', type = int, default=6, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--min-cluster-size', type = int, default=4, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--min-cluster-size-for-longish-pseudovox', type = int, default=2, help = "the min cluster size when a pseudovox is >=1 sec long, we allow this because there aren't that many of them")
-    parser.add_argument('--nonbio-min-cluster-size', type = int, default=6, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--nonbio-min-cluster-size', type = int, default=4, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
-    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration", help = "csv of scenarios to choose from for constructing examples")
+    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
     
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
     parser.add_argument('--audioset-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/audioset_background_audio_info.csv')
@@ -523,11 +543,11 @@ if __name__ == "__main__":
             ends = np.where(~look_forward)[0]
             if len(ends)>0:
                 end = start+np.amin(ends)
-                d["Begin Time (s)"].append(start/args.sr)
-                d["End Time (s)"].append(end/args.sr)
-                d["Annotation"].append("POS")
             else:
                 end = len(labels)-1
+            d["Begin Time (s)"].append(start/args.sr)
+            d["End Time (s)"].append(end/args.sr)
+            d["Annotation"].append("POS")
                 
         if labels[0]:
             start = 0
@@ -535,11 +555,11 @@ if __name__ == "__main__":
             ends = np.where(~look_forward)[0]
             if len(ends)>0:
                 end = start+np.amin(ends)
-                d["Begin Time (s)"].append(start/args.sr)
-                d["End Time (s)"].append(end/args.sr)
-                d["Annotation"].append("POS")
             else:
                 end = len(labels)-1
+            d["Begin Time (s)"].append(start/args.sr)
+            d["End Time (s)"].append(end/args.sr)
+            d["Annotation"].append("POS")
 
         d = pd.DataFrame(d)
         d.to_csv(os.path.join(output_dir, f"selection_table_{i}.txt"), sep='\t', index=False)
