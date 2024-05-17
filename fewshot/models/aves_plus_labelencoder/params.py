@@ -37,6 +37,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--n-train-steps', type=int, required=True)
     parser.add_argument('--clip-grad-norm', type=float, default=3.0)
     parser.add_argument('--n-steps-warmup', type=int, default=10000)
+    parser.add_argument('--effective-batch-size', type=int, default=None)
     
     # Data
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
@@ -63,7 +64,10 @@ def parse_args(args,allow_unknown=False):
     
     args = parser.parse_args(args)
     
-    setattr(args, "n_synthetic_examples", args.batch_size * args.n_train_steps)
+    if args.effective_batch_size is None:
+        setattr(args, "effective_batch_size", args.batch_size)
+    
+    setattr(args, "n_synthetic_examples", args.effective_batch_size * args.n_train_steps)
 
     check_config(args)
 
@@ -97,3 +101,4 @@ def check_config(args):
     assert args.support_dur_sec % args.audio_chunk_size_sec == 0
     assert args.query_dur_sec % args.audio_chunk_size_sec == 0
     assert args.audio_chunk_size_sec * args.sr % args.scale_factor == 0
+    assert args.effective_batch_size % args.batch_size == 0

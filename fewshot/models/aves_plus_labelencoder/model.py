@@ -11,7 +11,7 @@ import json
 from x_transformers import ContinuousTransformerWrapper, Encoder
 
 
-class AvesEmbedding(nn.Module):
+class Wav2Vec2Embedding(nn.Module):
     def __init__(self, args):
         super().__init__()
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -34,15 +34,23 @@ class AvesEmbedding(nn.Module):
 
         return obj
 
-    def forward(self, sig):
-        # extract_feature in the torchaudio version will output all 12 layers' output, -1 to select the final one
-        out = self.model.extract_features(sig)[0][-1]
+#     def forward(self, sig):
+#         # extract_feature in the torchaudio version will output all 12 layers' output, -1 to select the final one
+#         out = self.model.extract_features(sig)[0][-1]
 
-        return out
+#         return out
+    
+    def frame_level_features(self, waveforms):
+        x, _ = self.model.feature_extractor(waveforms, None)
+        return x
+    
+    def transformer_features(self, x):
+        x = self.model.encoder.extract_features(x, None, None)
+        return x[-1]
       
     def freeze(self):
-        for param in self.model.encoder.parameters():
-            param.requires_grad = False
+        # for param in self.model.encoder.parameters():
+        #     param.requires_grad = False
         self.model.feature_extractor.requires_grad_(False)
 
     def unfreeze(self):
@@ -51,27 +59,38 @@ class AvesEmbedding(nn.Module):
         self.model.feature_extractor.requires_grad_(True)
         
 class LabelEncoder(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, wav2vec2model):
         super().__init__()
         self.support_seq_len = int(args.support_dur_sec * args.sr / args.scale_factor)
         self.query_seq_len = int(args.query_dur_sec * args.sr / args.scale_factor)
         assert args.support_dur_sec * args.sr / args.scale_factor == self.support_seq_len
         assert args.query_dur_sec * args.sr / args.scale_factor == self.query_seq_len
-        self.transformer = ContinuousTransformerWrapper(
-            dim_in = args.embedding_dim + 4,
-            dim_out = 512,
-            max_seq_len = int(self.support_seq_len + self.query_seq_len),
-            attn_layers = Encoder(
-                dim = args.label_encoder_dim,
-                depth = args.label_encoder_depth,
-                heads = args.label_encoder_heads,
-                attn_flash=True,
-                rotary_pos_emb=True
-            )
-        )
-        self.label_embedding=torch.nn.Conv1d(4, 4, 1)
-        self.logits_head = nn.Conv1d(512, 1, 1)
+        
+        self.wav2vec2model = wav2vec2model
+        
+        # self.transformer = ContinuousTransformerWrapper(
+        #     dim_in = 512 + 4,
+        #     dim_out = 512,
+        #     max_seq_len = int(self.support_seq_len + self.query_seq_len),
+        #     attn_layers = Encoder(
+        #         dim = args.label_encoder_dim,
+        #         depth = args.label_encoder_depth,
+        #         heads = args.label_encoder_heads,
+        #         attn_flash=True,
+        #         rotary_pos_emb=True
+        #     )
+        # )
+        
+        # self.label_embedding=torch.nn.Conv1d(4, 512, 1)
+        self.label_embedding=torch.nn.Conv1d(4, 3, 1)
+        self.logits_head = nn.Conv1d(768, 1, 1)
         # self.confidences_head = nn.Conv1d(512, 64, 1)
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        sep = torch.normal(torch.zeros((1,512,1)), torch.ones((1,512,1)))
+        self.sep_token = torch.nn.parameter.Parameter(data=sep.to(device))
+        
         self.args = args
 
     def forward(self, encoded_support_audio, support_labels_downsampled, encoded_query_audio):
@@ -86,26 +105,29 @@ class LabelEncoder(nn.Module):
         
         support_labels_downsampled=self.label_embedding(support_labels_downsampled)
         query_masked_labels=self.label_embedding(query_masked_labels)
+
+        # replace last 3 dims with labels... kind of rough but simply adding the two did not train.
+        support = torch.cat((encoded_support_audio[:,:-3,:], support_labels_downsampled), dim=1) # (batch, embedding_dim, time/scale_factor)
+        query = torch.cat((encoded_query_audio[:,:-3,:], query_masked_labels), dim=1) # (batch, embedding_dim, time/scale_factor)
+        sep_token = self.sep_token.expand(query.size(0), -1, -1)
         
-        support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
-        query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
-        
-        transformer_input = torch.cat((support_cat, query_cat), dim = 2)
+        transformer_input = torch.cat((support, sep_token, query), dim = 2)
         transformer_input = rearrange(transformer_input, 'b c t -> b t c')
         
-        transformer_output = self.transformer(transformer_input)
+        transformer_output = self.wav2vec2model.transformer_features(transformer_input)
+        # transformer_output = self.transformer(transformer_input)
         transformer_output = rearrange(transformer_output, 'b t c -> b c t')
         
-        query_output = transformer_output[:,:,support_len:] # return only embedding for query
+        query_output = transformer_output[:,:,support_len+1:] # return only embedding for query
         logits = self.logits_head(query_output).squeeze(1)
         confidences = rearrange(query_output, 'b c t -> b t c')
         
         return  logits, confidences # each output: (batch, query_time/scale_factor). 
         
-class AvesEncoder(nn.Module):
-    def __init__(self, args):
+class AudioEncoder(nn.Module):
+    def __init__(self, args, wav2vec2model):
         super().__init__()
-        self.aves_embedding = AvesEmbedding(args)
+        self.wav2vec2model = wav2vec2model
         self.args = args
 
     def forward(self, x):
@@ -113,19 +135,16 @@ class AvesEncoder(nn.Module):
         Input
             x (Tensor): (batch, time) (time at 16000 Hz, audio_sr)
         Returns
-            x_encoded (Tensor): (batch, embedding_dim, time) (time at 50 Hz, aves_sr)
+            feats (Tensor): (batch, embedding_dim, time) (time at 50 Hz)
         """
-
-        # chunk long audio into smaller pieces
-        # maybe better to do via a reshape? there is some tradeoff here
-        x_encoded = []
         
         if x.size(1) % self.args.scale_factor != 0:
             raise Exception("audio length is not divisible by scale factor")
             
         expected_dur_output = x.size(1)//self.args.scale_factor
         
-        feats = self.aves_embedding(x)
+        feats = self.wav2vec2model.frame_level_features(x)
+        
         feats = rearrange(feats, 'b t c -> b c t')
 
         #embedding may be off by 1 sample from expected
@@ -136,20 +155,23 @@ class AvesEncoder(nn.Module):
         return feats
 
     def freeze(self):
-        self.aves_embedding.freeze()
+        self.wav2vec2model.freeze()
           
     def unfreeze(self):
-        self.aves_embedding.unfreeze()
+        self.wav2vec2model.unfreeze()
 
 class FewShotModel(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.audio_encoder = AvesEncoder(args)
-        self.label_encoder = LabelEncoder(args)
+        self.wav2vec2model = Wav2Vec2Embedding(args) 
+        
+        self.audio_encoder = AudioEncoder(args, self.wav2vec2model) 
+        self.label_encoder = LabelEncoder(args, self.wav2vec2model) 
+        
         self.args = args
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
         self.confidence_transformer = ContinuousTransformerWrapper(
-            dim_in = 512,
+            dim_in = 768,
             dim_out = 1,
             max_seq_len = 0,
             use_abs_pos_emb = False,
@@ -162,7 +184,7 @@ class FewShotModel(nn.Module):
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
          
-        cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
+        cl = torch.normal(torch.zeros((1,1,768)), torch.ones((1,1,768)))
         self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
         # assert self.audio_chunk_size_samples % 2 == 0, "chunk size must be even, to allow for 50% windowing"
 
@@ -215,22 +237,12 @@ class FewShotModel(nn.Module):
         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
         cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
+        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1) #bt 1 1 -> bt
         query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
         weighted_average_logits=query_logits
         
-        
-        
-#         query_logits = torch.stack(query_logits, 1)
-#         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-        
-#         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
-#         query_confidences = query_confidences.squeeze(2)
-#         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-        
-#         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
+        # query_logits = torch.stack(query_logits,1)
+        # weighted_average_logits=query_logits.mean(1)
         
         # downsample query labels, for training
         if query_labels is not None:
