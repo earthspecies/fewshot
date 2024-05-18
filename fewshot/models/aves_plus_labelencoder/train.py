@@ -13,12 +13,17 @@ import yaml
 from pathlib import Path
 from torchvision.ops import sigmoid_focal_loss
 import random
+import bitsandbytes as bnb
+import wandb
 
 from fewshot.models.aves_plus_labelencoder.model import FewShotModel
 from fewshot.models.aves_plus_labelencoder.params import parse_args, save_params
 from fewshot.data.data import get_dataloader
 from fewshot.models.aves_plus_labelencoder.inference import inference_dcase
 from fewshot.dcase_evaluation.evaluation import evaluate as evaluate_dcase
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 # Get cpu or gpu device for training.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -41,6 +46,10 @@ def main(args):
     setattr(args, 'experiment_dir', str(experiment_dir))
     if not os.path.exists(args.experiment_dir):
         os.makedirs(args.experiment_dir)
+
+    if args.wandb:
+        wandb.init(project="fewshot")
+        wandb.config.update(args)
 
     save_params(args)
     
@@ -116,10 +125,12 @@ def compute_metrics(logits, query_labels):
 def train(model, args):
     model = model.to(device)
     model.train()
+    torch.compile(model)
   
     loss_fn = get_loss_fn(args)
   
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
+    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
     # warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     # warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
@@ -128,20 +139,24 @@ def train(model, args):
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
     scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
   
+    scaler = torch.cuda.amp.GradScaler()
+    
     history={'loss' : [], 'learning_rate' : [], 'accuracy' : [], 'precision':[], 'recall':[]}
     
     dataloader=get_dataloader(args)
     
     model.freeze_audio_encoder()
     
-    for t, data_item in enumerate(dataloader):
+    for t, data_item in tqdm.tqdm(enumerate(dataloader), total=len(dataloader)):
         if t == args.unfreeze_encoder_step:
             model.unfreeze_audio_encoder()
         
         support_audio, support_labels, query_audio, query_labels = data_item
-        logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
         
-        loss = loss_fn(logits, query_labels)
+        with torch.cuda.amp.autocast(dtype=torch.float16):
+            logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
+            loss = loss_fn(logits, query_labels)
+            
         acc, prec, rec = compute_metrics(logits, query_labels)
         
         history['loss'].append(loss.item())
@@ -150,12 +165,30 @@ def train(model, args):
         history['precision'].append(float(prec.item()))
         history['recall'].append(float(rec.item()))
 
+        if args.wandb:
+            wandb.log(
+                {
+                    "loss": loss.item(),
+                    "accuracy": acc.item(),
+                    "precision": prec.item(),
+                    "recall": rec.item(),
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                }
+            )
+
+        if t % args.log_steps == 0:
+            print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}")
+
+
         # Backpropagation
         optimizer.zero_grad()
-        loss.backward()
+        # loss.backward()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-        optimizer.step()
+        scaler.step(optimizer)
         scheduler.step()
+        scaler.update()
         
         if (t % args.checkpoint_frequency == 0) or (t==len(dataloader)-1):
             print(f"Step {t}: Loss={np.mean(history['loss'][-args.checkpoint_frequency:])}, Accuracy={np.mean(history['accuracy'][-args.checkpoint_frequency:])}, Precision={np.mean(history['precision'][-args.checkpoint_frequency:])}, Recall={np.mean(history['recall'][-args.checkpoint_frequency:])}")

@@ -37,6 +37,8 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--n-train-steps', type=int, required=True)
     parser.add_argument('--clip-grad-norm', type=float, default=3.0)
     parser.add_argument('--n-steps-warmup', type=int, default=10000)
+    parser.add_argument('--log-steps', type=int, default=100)
+    parser.add_argument('--wandb', type=bool, default=False, help="log to wandb")
     
     # Data
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')

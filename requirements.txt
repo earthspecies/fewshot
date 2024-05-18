@@ -12,3 +12,5 @@ torchvision>=0.15.2
 tqdm>=4.65.0
 transformers>=4.36.2
 x_transformers>=1.27.19
+bitsandbytes>=0.43.1
+wandb>=0.15.5
