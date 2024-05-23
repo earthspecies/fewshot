@@ -297,7 +297,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
                     
         halfwindowed_audio_len = support_audio[to_cut:].size(0)
         # assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
-        if not model.args.simple_transformer:
+        if model.args.simple_transformer != True:
             support_audio = torch.cat((support_audio[to_cut:], support_audio))
             support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
         
@@ -343,7 +343,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         
         all_query_predictions = torch.cat(all_query_predictions, dim=0)
         # assert all_query_predictions.size(1) % 4 == 0
-        if not model.args.simple_transformer:
+        if model.args.simple_transformer != True:
             quarter_window = all_query_predictions.size(1)//4
 
             all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))

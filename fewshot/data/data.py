@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import torch
 import torchaudio
 
@@ -432,6 +432,15 @@ class FewshotDataset(Dataset):
     def __len__(self):
         return self.args.n_synthetic_examples
       
+def get_dataloader_distributed(dataset, args, world_size, rank):
+    train_dataloader = DataLoader(dataset,
+                                  batch_size=args.batch_size,
+                                  num_workers=args.num_workers,
+                                  pin_memory=True,
+                                  drop_last = False,
+                                  sampler=DistributedSampler(dataset, num_replicas=world_size, rank=rank))
+    return train_dataloader
+
 def get_dataloader(args, shuffle = True):
     dataset = FewshotDataset(args)
 
@@ -441,9 +450,7 @@ def get_dataloader(args, shuffle = True):
                                   num_workers=args.num_workers,
                                   pin_memory=True,
                                   drop_last = False)
-
     return train_dataloader
-
 
 class InferenceDataset(Dataset):
     def __init__(self, support_audio, support_labels, query_audio, args):

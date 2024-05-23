@@ -233,7 +233,8 @@ class FewShotModel(nn.Module):
         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
         cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-        if len(query_logits) == 1 and self.args.simple_transformer:
+        if len(query_logits) == 1 and self.args.simple_transformer == True:
+            print("simple transformer")
             query_logits = query_logits[0]
         else:
             query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
