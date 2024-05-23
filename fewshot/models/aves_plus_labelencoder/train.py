@@ -232,7 +232,7 @@ def train(rank, dataset, world_size, model_fn, args):
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)
         
         if rank == 0:
-            torch.save(model.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
+            torch.save(model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
     
     cleanup()
     return model
