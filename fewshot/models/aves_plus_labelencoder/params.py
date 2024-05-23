@@ -27,6 +27,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--label-encoder-heads', type=int, default=8, help="n heads in each mhsa layer. note dim per head is dim/n heads. Default follows BERT Small")    
     parser.add_argument('--support-dur-sec', type=float, default=24, help="dur of support audio fed into model")
     parser.add_argument('--query-dur-sec', type=float, default=4, help="dur of query audio fed into model")
+    parser.add_argument('--simple-transformer', action="store_true", help="Skip the final transformer")
     
     # Training
     parser.add_argument('--batch-size', type=int, default=8)
@@ -39,6 +40,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--n-steps-warmup', type=int, default=10000)
     parser.add_argument('--log-steps', type=int, default=100)
     parser.add_argument('--wandb', type=bool, default=False, help="log to wandb")
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=1, help="accumulate gradients over this many steps")
     
     # Data
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
@@ -97,5 +99,5 @@ def load_params(fp):
 
 def check_config(args):
     assert args.support_dur_sec % args.audio_chunk_size_sec == 0
-    assert args.query_dur_sec % args.audio_chunk_size_sec == 0
+    # assert args.query_dur_sec % args.audio_chunk_size_sec == 0
     assert args.audio_chunk_size_sec * args.sr % args.scale_factor == 0

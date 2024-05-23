@@ -453,14 +453,15 @@ class InferenceDataset(Dataset):
         # support_audio (Tensor) : (support_dur_samples,)
         # support_labels (Tensor) : (support_dur_samples,)
         # query_audio (Tensor) : (query_dur_samples)
-        hop_ratio = 0.5
+        # hop_ratio = 0.5
+        hop_ratio = 1.0
         self.args = args
         self.support_audio = support_audio
         self.support_labels = support_labels
         self.query_audio = query_audio
         self.query_dur_samples = int(args.sr * args.query_dur_sec)
         assert self.query_dur_samples*hop_ratio == int(self.query_dur_samples*hop_ratio) # hop ratio must divide window size
-        self.hop_samples = int(self.query_dur_samples*hop_ratio)
+        self.hop_samples = int(self.query_dur_samples)
         assert self.query_audio.size(0) >= self.query_dur_samples # audio must be at least one window long
         assert (self.query_audio.size(0) - self.query_dur_samples) % self.hop_samples == 0 # hop size must divide audio length
         

@@ -10,6 +10,8 @@ from torchaudio.models import wav2vec2_model
 import json
 from x_transformers import ContinuousTransformerWrapper, Encoder
 
+from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
+
 
 class AvesEmbedding(nn.Module):
     def __init__(self, args):
@@ -66,10 +68,14 @@ class LabelEncoder(nn.Module):
                 depth = args.label_encoder_depth,
                 heads = args.label_encoder_heads,
                 attn_flash=True,
-                rotary_pos_emb=True
+                rotary_pos_emb = True,
+                ff_no_bias = True,
+                ff_swish = True,
+                ff_glu = True
             )
         )
         self.label_embedding=torch.nn.Conv1d(4, 4, 1)
+        # self.label_embedding = torch.nn.Linear(4, args.embedding_dim)
         self.logits_head = nn.Conv1d(512, 1, 1)
         # self.confidences_head = nn.Conv1d(512, 64, 1)
         self.args = args
@@ -89,6 +95,9 @@ class LabelEncoder(nn.Module):
         
         support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
         query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
+
+        # support_cat = encoded_support_audio + support_labels_downsampled
+        # query_cat = encoded_query_audio + query_masked_labels
         
         transformer_input = torch.cat((support_cat, query_cat), dim = 2)
         transformer_input = rearrange(transformer_input, 'b c t -> b t c')
@@ -144,7 +153,12 @@ class AvesEncoder(nn.Module):
 class FewShotModel(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.audio_encoder = AvesEncoder(args)
+
+        if False:
+            self.audio_encoder = create_htsat_model(HTSATConfig())
+        else:
+            self.audio_encoder = AvesEncoder(args)
+
         self.label_encoder = LabelEncoder(args)
         self.args = args
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
@@ -157,6 +171,10 @@ class FewShotModel(nn.Module):
                 dim = 128,
                 depth = 2,
                 heads = 2,
+                ff_no_bias = True,
+                ff_swish = True,
+                ff_glu = True,
+                attn_flash=True
             )
         )
         
@@ -215,7 +233,10 @@ class FewShotModel(nn.Module):
         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
         cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
+        if len(query_logits) == 1 and self.args.simple_transformer:
+            query_logits = query_logits[0]
+        else:
+            query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
         query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
         weighted_average_logits=query_logits
         

@@ -16,6 +16,7 @@ import random
 import bitsandbytes as bnb
 import wandb
 
+
 from fewshot.models.aves_plus_labelencoder.model import FewShotModel
 from fewshot.models.aves_plus_labelencoder.params import parse_args, save_params
 from fewshot.data.data import get_dataloader
@@ -77,6 +78,7 @@ def main(args):
         outputs.append(d)
         
     outputs=pd.concat(outputs)
+    
     output_fp = os.path.join(args.experiment_dir, "dcase_predictions.csv")
     outputs.to_csv(output_fp, index=False)
     
@@ -120,7 +122,6 @@ def compute_metrics(logits, query_labels):
     rec = TP / (TP + FN)
         
     return torch.nan_to_num(acc), torch.nan_to_num(prec), torch.nan_to_num(rec)
-    
 
 def train(model, args):
     model = model.to(device)
@@ -131,13 +132,13 @@ def train(model, args):
   
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
-    # warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    # warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
-    # scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+    warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
-    scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
+    scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
+    # warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+    # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
+    # scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
   
     scaler = torch.cuda.amp.GradScaler()
     
@@ -152,10 +153,15 @@ def train(model, args):
             model.unfreeze_audio_encoder()
         
         support_audio, support_labels, query_audio, query_labels = data_item
-        
-        with torch.cuda.amp.autocast(dtype=torch.float16):
+        # logits, query_labels = uses_autocast(model, support_audio=support_audio.to(device = device, dtype = torch.float), support_labels=support_labels.to(device = device, dtype = torch.float), query_audio=query_audio.to(device = device, dtype = torch.float),
+        #     query_labels=query_labels.to(device = device, dtype = torch.float))
+                    
+        with torch.cuda.amp.autocast():
             logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
             loss = loss_fn(logits, query_labels)
+            loss = loss / args.gradient_accumulation_steps
+        
+        scaler.scale(loss).backward()
             
         acc, prec, rec = compute_metrics(logits, query_labels)
         
@@ -179,16 +185,15 @@ def train(model, args):
         if t % args.log_steps == 0:
             print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}")
 
-
-        # Backpropagation
-        optimizer.zero_grad()
+        
         # loss.backward()
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-        scaler.step(optimizer)
-        scheduler.step()
-        scaler.update()
+        if (t + 1) % args.gradient_accumulation_steps == 0 or (t + 1 == len(dataloader)):
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+            scaler.step(optimizer)
+            scheduler.step()
+            optimizer.zero_grad()
+            scaler.update()
         
         if (t % args.checkpoint_frequency == 0) or (t==len(dataloader)-1):
             print(f"Step {t}: Loss={np.mean(history['loss'][-args.checkpoint_frequency:])}, Accuracy={np.mean(history['accuracy'][-args.checkpoint_frequency:])}, Precision={np.mean(history['precision'][-args.checkpoint_frequency:])}, Recall={np.mean(history['recall'][-args.checkpoint_frequency:])}")
@@ -200,7 +205,7 @@ def train(model, args):
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "history": history,
-                }
+            }
 
             torch.save(checkpoint_dict, os.path.join(args.experiment_dir, f"model_{t}.pt"))
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)

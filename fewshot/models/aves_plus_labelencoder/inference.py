@@ -223,11 +223,17 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
         query_logits.append(l)
         c = torch.reshape(c, (-1, c_shape[2]))
         query_confidences.append(c)
+    
+    # print("simple transformer::", model.args.simple_transformer, type(model.args.simple_transformer))
+    if model.args.simple_transformer != True:
+        query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+        cls_token = model.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
+        query_confidences = torch.cat([cls_token, query_confidences], dim=1)
+        query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
+    else:
+        print("Simple transformer, num chunks::", len(query_logits))
+        query_logits = query_logits[0]
         
-    query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-    cls_token = model.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
-    query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-    query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
     query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
     weighted_average_logits=query_logits
 
@@ -280,8 +286,8 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         support_training_dur_samples = int(args.sr*args.support_dur_sec)
         support_dur_samples = support_audio.size(0)
         
-        assert model.audio_chunk_size_samples % 2 == 0
-        assert support_dur_samples >= model.audio_chunk_size_samples//2
+        # assert model.audio_chunk_size_samples % 2 == 0
+        # assert support_dur_samples >= model.audio_chunk_size_samples//2
         
         remainder = support_dur_samples % model.audio_chunk_size_samples
         if remainder >= model.audio_chunk_size_samples//2:
@@ -290,9 +296,10 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
             to_cut = remainder+model.audio_chunk_size_samples//2
                     
         halfwindowed_audio_len = support_audio[to_cut:].size(0)
-        assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
-        support_audio = torch.cat((support_audio[to_cut:], support_audio))
-        support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
+        # assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
+        if not model.args.simple_transformer:
+            support_audio = torch.cat((support_audio[to_cut:], support_audio))
+            support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
         
         # Pad out so we don't have empty sounds
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
@@ -300,7 +307,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
             support_audio = torch.cat((support_audio, support_audio[:support_pad]))
             support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
         
-        # Pad query to match training length
+        # Pad query to match training length. Is this problematic given no padding in training?
         query_dur_samples = int(args.query_dur_sec * args.sr)
         query_pad = (query_dur_samples - (query_audio.size(0) % query_dur_samples)) % query_dur_samples
         if query_pad>0:
@@ -335,12 +342,13 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         
         
         all_query_predictions = torch.cat(all_query_predictions, dim=0)
-        assert all_query_predictions.size(1) % 4 == 0
-        quarter_window = all_query_predictions.size(1)//4
-        
-        all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
-        all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
-        
+        # assert all_query_predictions.size(1) % 4 == 0
+        if not model.args.simple_transformer:
+            quarter_window = all_query_predictions.size(1)//4
+
+            all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
+            all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
+            
         #remove query padding        
         if query_pad // args.scale_factor > 0:
             all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)] # omit predictions for padded region at end of query
