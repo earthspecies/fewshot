@@ -137,6 +137,18 @@ def initialize_model(args):
         model.load_state_dict(cp["model_state_dict"])
     return model
 
+def get_optimizer(model, args):
+    regularized = []
+    not_regularized = []
+    for name, param in model.named_parameters():
+        if name.endswith(".bias") or len(param.shape) == 1:
+            not_regularized.append(param)
+        else:
+            regularized.append(param)
+    param_groups = [{'params': regularized, "weight_decay": 0.01}, {'params': not_regularized, 'weight_decay': 0.}]
+    args.weight_decay = 0.01
+    optimizer = bnb.optim.AdamW8bit(param_groups, lr=args.lr, amsgrad=True)
+    return optimizer
 
 def train(rank, dataset, world_size, model_fn, args):
     print(f"Running on rank {rank}, dataset type {type(dataset)}")
@@ -156,7 +168,8 @@ def train(rank, dataset, world_size, model_fn, args):
     torch.compile(model)
   
     loss_fn = get_loss_fn(args)
-    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad=True)
+    optimizer = get_optimizer(model, args)
+    
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=-1)
@@ -166,7 +179,6 @@ def train(rank, dataset, world_size, model_fn, args):
     history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': []}
     
     dataloader = get_dataloader_distributed(dataset, args, world_size=world_size, rank=rank)
-    
     
     
     for t, data_item in tqdm.tqdm(enumerate(dataloader), total=len(dataloader)):
