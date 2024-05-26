@@ -31,7 +31,8 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 # Get cpu or gpu device for training.
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cpu"
 
 if device == "cpu":
     import warnings
@@ -52,30 +53,31 @@ def main(args):
     if not os.path.exists(args.experiment_dir):
         os.makedirs(args.experiment_dir)
 
-    # if args.wandb:
-    #     wandb.init(project="fewshot")
-    #     wandb.config.update(args)
-
     save_params(args)
     
     world_size = torch.cuda.device_count()
+    # world_size = 0
     dataset = FewshotDataset(args)
-    mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
+
+    if world_size > 1:
+        mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
+    else:
+        train(0, dataset, world_size, initialize_model, args, single_gpu=True)
 
     print("Training Complete!")
 
     model = initialize_model(args)
-    model.load_state_dict(torch.load(os.path.join(args.experiment_dir, "final_model.pt")))
+    # model.load_state_dict(torch.load(os.path.join(args.experiment_dir, "final_model.pt")))
     
     ## Evaluation
-    evaluation_manifest=pd.read_csv(args.dcase_evaluation_manifest_fp)
+    evaluation_manifest = pd.read_csv(args.dcase_evaluation_manifest_fp)
     outputs = []
     print("Evaluation")
     for i, row in tqdm.tqdm(evaluation_manifest.iterrows(), total=len(evaluation_manifest)):
         d = inference_dcase(model, args, row['audio_fp'], row['annotation_fp'])
         outputs.append(d)
         
-    outputs=pd.concat(outputs)
+    outputs = pd.concat(outputs)
     
     output_fp = os.path.join(args.experiment_dir, "dcase_predictions.csv")
     outputs.to_csv(output_fp, index=False)
@@ -85,37 +87,37 @@ def main(args):
 def get_loss_fn(args):
     def loss_fn(logits, query_labels):
         # query labels: 0: NEG, 1: UNK, 2: POS
-        logits=torch.flatten(logits)
-        query_labels=torch.flatten(query_labels)
+        logits = torch.flatten(logits)
+        query_labels = torch.flatten(query_labels)
         
-        query_binary = torch.minimum(query_labels, torch.ones_like(query_labels)) #2->1
-        loss = sigmoid_focal_loss(logits, query_binary) #TODO add in loss hyperparams?
+        query_binary = torch.minimum(query_labels, torch.ones_like(query_labels))  # 2->1
+        loss = sigmoid_focal_loss(logits, query_binary)  # TODO add in loss hyperparams?
         unknown_mask = query_labels != 1
-        loss = loss * unknown_mask # set loss of unknowns to 0
+        loss = loss * unknown_mask  # set loss of unknowns to 0
         loss = torch.mean(loss)
         return loss
         
     return loss_fn
 
 def compute_metrics(logits, query_labels):
-    logits=torch.flatten(logits)
-    query_labels=torch.flatten(query_labels)
-    mask = query_labels!=1
+    logits = torch.flatten(logits)
+    query_labels = torch.flatten(query_labels)
+    mask = query_labels != 1
     
-    logits_masked=logits[mask]
-    query_labels_masked=query_labels[mask]
+    logits_masked = logits[mask]
+    query_labels_masked = query_labels[mask]
     
-    pred_pos = logits_masked>=0.
-    pred_neg = logits_masked<0.
-    query_labels_pos = query_labels_masked>=0.5
-    query_labels_neg = query_labels_masked<0.5
+    pred_pos = logits_masked >= 0.
+    pred_neg = logits_masked < 0.
+    query_labels_pos = query_labels_masked >= 0.5
+    query_labels_neg = query_labels_masked < 0.5
     
     TP = torch.sum(pred_pos * query_labels_pos)
     TN = torch.sum(pred_neg * query_labels_neg)
     FP = torch.sum(pred_pos * query_labels_neg)
     FN = torch.sum(pred_neg * query_labels_pos)
     
-    acc = (TP+TN)/(TP+TN+FP+FN)
+    acc = (TP + TN) / (TP + TN + FP + FN)
     prec = TP / (TP + FP)
     rec = TP / (TP + FN)
         
@@ -150,11 +152,16 @@ def get_optimizer(model, args):
     optimizer = bnb.optim.AdamW8bit(param_groups, lr=args.lr, amsgrad=True)
     return optimizer
 
-def train(rank, dataset, world_size, model_fn, args):
+def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
     print(f"Running on rank {rank}, dataset type {type(dataset)}")
-    setup(rank, world_size)
-    torch.cuda.set_device(rank)
-    device = torch.device("cuda", rank)
+    
+    if not single_gpu:
+        setup(rank, world_size)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cpu"
 
     if rank == 0:
         wandb.init(project="fewshot")
@@ -163,27 +170,37 @@ def train(rank, dataset, world_size, model_fn, args):
     model = model_fn(args)
     model = model.to(device)
     model.freeze_audio_encoder()
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+    
+    if not single_gpu:
+        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+    
     model.train()
-    torch.compile(model)
+    torch.compile(model, mode="max-autotune")
   
     loss_fn = get_loss_fn(args)
     optimizer = get_optimizer(model, args)
+
+    if not single_gpu:
+        dataloader = get_dataloader_distributed(dataset, args, world_size=world_size, rank=rank)
+    else:
+        dataloader = get_dataloader(args)
     
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=-1)
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(dataloader), eta_min=0, last_epoch=-1)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
     
     scaler = torch.cuda.amp.GradScaler()
     history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': []}
     
-    dataloader = get_dataloader_distributed(dataset, args, world_size=world_size, rank=rank)
     
     
     for t, data_item in tqdm.tqdm(enumerate(dataloader), total=len(dataloader)):
         if t == args.unfreeze_encoder_step:
-            model.module.unfreeze_audio_encoder()
+            if not single_gpu:
+                model.module.unfreeze_audio_encoder()
+            else:
+                model.unfreeze_audio_encoder()
         
         support_audio, support_labels, query_audio, query_labels = data_item
         
@@ -234,7 +251,7 @@ def train(rank, dataset, world_size, model_fn, args):
                 yaml.dump(history, f)
             checkpoint_dict = {
                 "step": t,
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": model.state_dict() if single_gpu else model.module.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "history": history,
@@ -244,11 +261,12 @@ def train(rank, dataset, world_size, model_fn, args):
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)
         
         if rank == 0:
-            torch.save(model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
+            torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
     
-    cleanup()
+    if not single_gpu:
+        cleanup()
+    
     return model
-
 
 if __name__ == "__main__":
     main(sys.argv[1:])

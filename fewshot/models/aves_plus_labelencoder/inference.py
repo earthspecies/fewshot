@@ -310,7 +310,7 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
     weighted_average_logits=query_logits
     # sigmoid
-    # query_logits = torch.sigmoid(query_logits)
+    query_logits = torch.sigmoid(query_logits)
 
 #     query_logits = torch.stack(query_logits, 1)
 #     query_confidences = torch.stack(query_confidences, 1) # bt n_support c
@@ -335,6 +335,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
     
     fn = os.path.basename(audio_fp)
+    device = "cpu"
     
     # loading for speedup
     np_fp = os.path.join(args.experiment_dir, fn[:-4]+".npy")
@@ -343,6 +344,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         annotations = pd.read_csv(annotations_fp)
 
         support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
+        
         all_query_predictions = np.load(np_fp)
         # sigmoid
         all_query_predictions = torch.tensor(all_query_predictions)
@@ -351,6 +353,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
     #
         
     else:
+        
         model = model.to(device)
         model.eval()
 

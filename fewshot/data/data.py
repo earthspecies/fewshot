@@ -5,6 +5,18 @@ from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import torch
 import torchaudio
 
+SCENARIO_WEIGHTS = {
+    "normal": 1,
+    "fine_grained_general": .75,
+    "low_snr": 0.75,
+    "disjunction_within_species": 0.5,
+    "generalization_within_species": 0.5,
+    "fine_grained_snr": 0.5,
+    "disjunction_cross_species": 0.25,
+    "fine_grained_pitch": 0.25,
+    "fine_grained_duration": 0.25
+}
+
 def load_audio(fp, target_sr):
     audio, file_sr = torchaudio.load(fp)
     
@@ -20,6 +32,30 @@ def load_audio(fp, target_sr):
         audio = torch.mean(audio, dim=0)
     
     return audio
+
+def apply_windowing(audio, labels, chunk_size_samples):
+    audio_dur_samples = audio.size(0)
+    remainder = audio_dur_samples % chunk_size_samples
+
+    if remainder >= chunk_size_samples // 2:
+        to_cut = remainder - chunk_size_samples // 2
+    else:
+        to_cut = remainder + chunk_size_samples // 2
+
+    halfwindowed_audio_len = audio[to_cut:].size(0)
+    assert halfwindowed_audio_len % chunk_size_samples == chunk_size_samples // 2, "Incorrect windowing math!"
+
+    audio = torch.cat((audio[to_cut:], audio))
+    labels = torch.cat((labels[to_cut:], labels))
+
+    pad = (chunk_size_samples - (audio.size(0) % chunk_size_samples)) % chunk_size_samples
+
+    if pad > 0:
+        audio = torch.cat((audio, audio[:pad]))
+        labels = torch.cat((labels, labels[:pad]))
+
+    return audio, labels
+
 
 class FewshotDataset(Dataset):
     def __init__(self, args):
@@ -60,12 +96,16 @@ class FewshotDataset(Dataset):
         self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, hop_length=64)
         self.shift_down = torchaudio.transforms.PitchShift(16000, -12, hop_length=64)
         self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, hop_length=64)
+
         self.scenarios = self.args.scenarios.split(',')
         
         # Init resamplers
         self.resamplers = {}
         self.resamplers[(args.sr, args.sr//2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr//2)
         self.resamplers[(args.sr, args.sr*2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr*2)
+
+        
+        self.audio_chunk_size_samples = int(self.args.audio_chunk_size_sec * self.args.sr)
         
     def load_audio(self, fp, target_sr):
         audio, file_sr = torchaudio.load(fp)
@@ -93,7 +133,7 @@ class FewshotDataset(Dataset):
         # Special scenario
         
         
-        scenario = rng.choice(self.scenarios)
+        scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] for s in self.scenarios])
             
         # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
                 
@@ -128,9 +168,10 @@ class FewshotDataset(Dataset):
             query_background_fp = background_fps[0]
         
         # prepare which pseudovox to choose from, for adding to background audio
-        pseudovox_from_here = self.pseudovox_info[self.pseudovox_info['raw_audio_fp'].isin(background_fps)]
+        pseudovox_from_here = self.pseudovox_info[self.pseudovox_info['raw_audio_fp'].isin(background_fps)] #NOTE: filtered based on both backgrounds but sometimes only one is used
         coarse_clusters_present = pseudovox_from_here["birdnet_prediction"].unique()
         coarse_clusters_allowed = self.coarse_clusters_with_enough_examples[~self.coarse_clusters_with_enough_examples.isin(coarse_clusters_present)]
+        
         
         if len(coarse_clusters_allowed) < 3:
             # corner case which probably never occurs: one background track contains almost every possible type of sound
@@ -243,6 +284,18 @@ class FewshotDataset(Dataset):
         
         support_dur_samples = int(self.args.support_dur_sec * self.args.sr)
         query_dur_samples = int(self.args.query_dur_sec * self.args.sr)
+
+        # Re-stitch the support background audio to match inference
+        restitch_support = rng.binomial(1, 0.1)
+        if restitch_support:
+            num_stitch_chunks = rng.integers(2, 5)
+            gap_size_samples = 100
+            min_length = support_dur_samples + num_stitch_chunks * gap_size_samples
+            
+            if audio_support.size(0) >= min_length:
+                chunk_size = (support_dur_samples - gap_size_samples * (num_stitch_chunks - 1)) // num_stitch_chunks
+                chunks = [audio_support[i*chunk_size + i*gap_size_samples : (i+1)*chunk_size + i*gap_size_samples] for i in range(num_stitch_chunks)]
+                audio_support = torch.cat(chunks, dim=0)
         
         if audio_support.size(0) <= support_dur_samples:
             # corner case: support soundscape is not long enough. in this case, tile it to make it long enough
@@ -253,6 +306,7 @@ class FewshotDataset(Dataset):
             audio_query =torch.tile(audio_query, (query_dur_samples//audio_query.size(0)+2,))
         
         audio_support_start_sample = rng.integers(0, audio_support.size(0) - support_dur_samples)
+        #TODO: query background non-overlapping where possible
         audio_query_start_sample = rng.integers(0, audio_query.size(0) - query_dur_samples)
         
         audio_support = audio_support[audio_support_start_sample:audio_support_start_sample+support_dur_samples]
@@ -427,6 +481,14 @@ class FewshotDataset(Dataset):
             audio_query = audio_support[slice_start_sample:slice_start_sample+query_dur_samples]
             query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
 
+        if self.args.window_train_support:
+            audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
+        
+        
+        
+        
+
+
         return audio_support, support_labels, audio_query, query_labels
 
 
@@ -495,12 +557,13 @@ if __name__ == "__main__":
     
     import argparse
     import sys
+    import tarfile
     
     args = sys.argv[1:]
     
     # set output dir
     
-    output_dir = '/home/jupyter/fewshot_demo_clips'
+    output_dir = 'fewshot_demo_clips_rss2'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
@@ -511,6 +574,7 @@ if __name__ == "__main__":
     # General    
     
     parser.add_argument('--sr', type=int, default=16000)
+    parser.add_argument('--audio-chunk-size-sec', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--n-synthetic-examples', type=int, default=20, help="limit on number of unique examples the dataloader will generate; required by pytorch Dataloder")
@@ -525,6 +589,7 @@ if __name__ == "__main__":
     parser.add_argument('--nonbio-min-cluster-size', type = int, default=4, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
     parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
+    parser.add_argument('--window-train-support', action='store_true', help="whether to apply windowing to support audio during training")
     
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
     parser.add_argument('--audioset-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/audioset_background_audio_info.csv')
@@ -571,6 +636,10 @@ if __name__ == "__main__":
 
         d = pd.DataFrame(d)
         d.to_csv(os.path.join(output_dir, f"selection_table_{i}.txt"), sep='\t', index=False)
-        
-        
     
+    # Tar the output directory
+    tar_path = f"{output_dir}.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        tar.add(output_dir, arcname=os.path.basename(output_dir))
+    
+    print(f"Output directory {output_dir} has been archived to {tar_path}")

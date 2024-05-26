@@ -41,6 +41,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--log-steps', type=int, default=100)
     parser.add_argument('--wandb', type=bool, default=False, help="log to wandb")
     parser.add_argument('--gradient-accumulation-steps', type=int, default=1, help="accumulate gradients over this many steps")
+    parser.add_argument('--window-train-support', action="store_true", help="window the support audio during training")
     
     # Data
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
