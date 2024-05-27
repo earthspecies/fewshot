@@ -55,7 +55,8 @@ def process_dcase(audio, annotations, args):
         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
         annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/args.sr) & (annot_pos['Starttime'] < chunk_end/args.sr)]
         annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/args.sr) & (annot_pos['Endtime'] < chunk_end/args.sr)]
-        if len(annot_pos_start_sub) + len(annot_pos_end_sub)>0:
+        annot_pos_long_sub = annot_pos[(annot_pos['Starttime'] < chunk_start/args.sr) &(annot_pos['Endtime'] >= chunk_end/args.sr)]
+        if len(annot_pos_start_sub) + len(annot_pos_end_sub) + len(annot_pos_long_sub) >0:
             chunks_to_keep.append(chunk_start)
         else:
             chunks_to_maybe_keep.append(chunk_start)
@@ -257,7 +258,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
     
     # loading for speedup
     np_fp = os.path.join(args.experiment_dir, fn[:-4]+".npy")
-    if os.path.exists(np_fp):
+    if False: #os.path.exists(np_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
