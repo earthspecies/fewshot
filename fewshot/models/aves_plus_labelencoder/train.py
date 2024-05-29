@@ -27,12 +27,14 @@ from fewshot.data.data import FewshotDataset, get_dataloader, get_dataloader_dis
 from fewshot.models.aves_plus_labelencoder.inference import inference_dcase
 from fewshot.dcase_evaluation.evaluation import evaluate as evaluate_dcase
 
+CONTRASTIVE_WEIGHT = 0.08
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 # Get cpu or gpu device for training.
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-device = "cpu"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+# device = "cpu"
 
 if device == "cpu":
     import warnings
@@ -136,7 +138,9 @@ def initialize_model(args):
     if args.previous_checkpoint_fp is not None:
         print(f"loading model weights from {args.previous_checkpoint_fp}")
         cp = torch.load(args.previous_checkpoint_fp)
+        # print(cp.keys())
         model.load_state_dict(cp["model_state_dict"])
+        # model.load_state_dict(cp)
     return model
 
 def get_optimizer(model, args):
@@ -161,7 +165,6 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
         device = torch.device("cuda", rank)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = "cpu"
 
     if rank == 0:
         wandb.init(project="fewshot")
@@ -175,7 +178,7 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
     
     model.train()
-    torch.compile(model, mode="max-autotune")
+    # torch.compile(model, mode="max-autotune")
   
     loss_fn = get_loss_fn(args)
     optimizer = get_optimizer(model, args)
@@ -186,12 +189,13 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
         dataloader = get_dataloader(args)
     
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+    # warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(dataloader), eta_min=0, last_epoch=-1)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
+    # scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
     
     scaler = torch.cuda.amp.GradScaler()
-    history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': []}
+    history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': [], 'contrastive_loss': [], 'focal_loss': []}
     
     
     
@@ -202,19 +206,25 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             else:
                 model.unfreeze_audio_encoder()
         
-        support_audio, support_labels, query_audio, query_labels = data_item
+        support_audio, support_labels, query_audio, query_labels, support_pseudovox_labels, support_pseudovox_offsets, query_pseudovox_labels, query_pseudovox_offsets = data_item
         
         with torch.cuda.amp.autocast():
-            logits, query_labels = model(
+            logits, query_labels, contrastive_loss = model(
                 support_audio.to(device=device, dtype=torch.float),
                 support_labels.to(device=device, dtype=torch.float),
                 query_audio.to(device=device, dtype=torch.float),
-                query_labels=query_labels.to(device=device, dtype=torch.float)
+                query_labels=query_labels.to(device=device, dtype=torch.float),
+                support_pseudovox_labels=support_pseudovox_labels.to(device=device),
+                support_pseudovox_offsets=support_pseudovox_offsets.to(device=device),
+                query_pseudovox_labels=query_pseudovox_labels.to(device=device),
+                query_pseudovox_offsets=query_pseudovox_offsets.to(device=device),
             )
-            loss = loss_fn(logits, query_labels)
+            focal_loss = loss_fn(logits, query_labels)
+            loss = focal_loss + contrastive_loss * CONTRASTIVE_WEIGHT
             loss = loss / args.gradient_accumulation_steps
         
         scaler.scale(loss).backward()
+            
         
         acc, prec, rec = compute_metrics(logits, query_labels)
         
@@ -224,10 +234,14 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             history['accuracy'].append(float(acc.item()))
             history['precision'].append(float(prec.item()))
             history['recall'].append(float(rec.item()))
+            history['contrastive_loss'].append(float(contrastive_loss.item()))
+            history['focal_loss'].append(float(focal_loss.item()))
 
             if args.wandb:
                 wandb.log({
                     "loss": loss.item(),
+                    "contrastive_loss": contrastive_loss.item(),
+                    "focal_loss": focal_loss.item(),
                     "accuracy": acc.item(),
                     "precision": prec.item(),
                     "recall": rec.item(),
@@ -235,7 +249,7 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
                 })
 
             if t % args.log_steps == 0:
-                print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}")
+                print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}, Contrastive Loss={np.mean(history['contrastive_loss'][-10:])}, Focal Loss={np.mean(history['focal_loss'][-10:])}")
 
         if (t + 1) % args.gradient_accumulation_steps == 0 or (t + 1 == len(dataloader)):
             scaler.unscale_(optimizer)
@@ -260,9 +274,9 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             torch.save(checkpoint_dict, os.path.join(args.experiment_dir, f"model_{t}.pt"))
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)
         
-        if rank == 0:
-            torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
-    
+    if rank == 0:
+        torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
+
     if not single_gpu:
         cleanup()
     

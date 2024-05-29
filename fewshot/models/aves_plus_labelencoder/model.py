@@ -9,8 +9,12 @@ import torchaudio
 from torchaudio.models import wav2vec2_model
 import json
 from x_transformers import ContinuousTransformerWrapper, Encoder
+import torch.nn.functional as F
+from transformers import Wav2Vec2Model
+
 
 from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
+from fewshot.models.aves_plus_labelencoder.loss import MultiPosConLoss
 
 
 class AvesEmbedding(nn.Module):
@@ -25,8 +29,10 @@ class AvesEmbedding(nn.Module):
         # self.model.load_state_dict(state_dict)
         # self.model.feature_extractor.requires_grad_(False)
         
-        bundle = torchaudio.pipelines.WAV2VEC2_BASE
-        self.model = bundle.get_model()
+        # bundle = torchaudio.pipelines.WAV2VEC2_BASE
+        # self.model = bundle.get_model()
+        self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base").to(device)
+
         
         self.sr=args.sr
 
@@ -38,17 +44,16 @@ class AvesEmbedding(nn.Module):
 
     def forward(self, sig):
         # extract_feature in the torchaudio version will output all 12 layers' output, -1 to select the final one
-        out = self.model.extract_features(sig)[0][-1]
-
+        out = self.model(sig).last_hidden_state
         return out
       
     def freeze(self):
-        for param in self.model.encoder.parameters():
+        for param in self.model.base_model.parameters():
             param.requires_grad = False
         self.model.feature_extractor.requires_grad_(False)
 
     def unfreeze(self):
-        for param in self.model.encoder.parameters():
+        for param in self.model.base_model.parameters():
             param.requires_grad = True
         self.model.feature_extractor.requires_grad_(True)
         
@@ -69,7 +74,6 @@ class LabelEncoder(nn.Module):
                 heads = args.label_encoder_heads,
                 attn_flash=True,
                 rotary_pos_emb = True,
-                ff_no_bias = True,
                 ff_swish = True,
                 ff_glu = True
             )
@@ -182,92 +186,155 @@ class FewShotModel(nn.Module):
                 attn_flash=True
             )
         )
-        
-        # device = "cuda" if torch.cuda.is_available() else "cpu"
-        device = "cpu"
+        self.supcon_loss = MultiPosConLoss()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
          
         cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
         self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
         # assert self.audio_chunk_size_samples % 2 == 0, "chunk size must be even, to allow for 50% windowing"
 
-    def forward(self, support_audio, support_labels, query_audio, query_labels=None, temperature=1):
+
+    def forward(self, support_audio, support_labels, query_audio, support_pseudovox_labels, support_pseudovox_offsets, query_labels=None, query_pseudovox_labels=None, query_pseudovox_offsets=None, temperature=1):
         """
         Input
             support_audio (Tensor): (batch, time) (at audio_sr)
             support_labels (Tensor): (batch, time) (at audio_sr)
+            support_pseudovox_labels (Tensor): (batch, max_length)
+            support_pseudovox_offsets (Tensor): (batch, max_length, 2)
             query_audio (Tensor): (batch, time) (at audio_sr)
             query_labels (Tensor): (batch, time) (at audio_sr)
+            query_pseudovox_labels (Tensor): (batch, max_length)
+            query_pseudovox_offsets (Tensor): (batch, max_length, 2)
         Output
             logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
+            contrastive_loss (Tensor): scalar loss value
         """
         
-        # pad and normalize audio
+        # Pad and normalize audio
         support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
-        if support_pad_len>0:
-            support_audio = F.pad(support_audio, (0,support_pad_len))
-            support_labels = F.pad(support_labels, (0,support_pad_len))
+        if support_pad_len > 0:
+            support_audio = F.pad(support_audio, (0, support_pad_len))
+            support_labels = F.pad(support_labels, (0, support_pad_len))
         
         normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
         normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
-        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+        support_audio = (support_audio - torch.mean(support_audio, dim=1, keepdim=True)) / normalization_factor
+        query_audio = (query_audio - torch.mean(query_audio, dim=1, keepdim=True)) / normalization_factor
         
-        # encode audio and labels
+        # Encode audio
         query_logits = []
         query_confidences = []
         
-        # with torch.no_grad(): # don't backprop across query embedding, since it is duplicated so much will slow down & cause imbalance
-        #     query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
-        query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
-            
+        query_audio_encoded = self.audio_encoder(query_audio)  # (batch, embedding_dim, time/scale_factor)
+        
         support_len_samples = support_audio.size(1)
-        print(f"support shape: {support_audio.shape}")
+        support_embeddings = []
+        support_embedding_labels = []
+        query_embeddings = []
+        query_embedding_labels = []
+        support_encoded_chunks = []
+
+        support_labels_downsampled = F.max_pool1d(support_labels.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1)  # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
+        # Downsample query labels, for training
+        if query_labels is not None:
+            query_labels = torch.unsqueeze(query_labels, 1)  # (batch, 1, time)
+            query_labels = F.max_pool1d(query_labels, self.args.scale_factor, padding=0)  # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
+            query_labels = torch.squeeze(query_labels, 1)  # (batch, time/scale_factor)
+
+        
         for start_sample in range(0, support_len_samples, self.audio_chunk_size_samples):
             support_audio_sub = support_audio[:, start_sample:start_sample+self.audio_chunk_size_samples]
             support_audio_sub_encoded = self.audio_encoder(support_audio_sub)
+            support_encoded_chunks.append(support_audio_sub_encoded)
             
             support_labels_sub = support_labels[:, start_sample:start_sample+self.audio_chunk_size_samples]
-            support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1) # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
+            support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1)  # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
             
-            l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
+            l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded)  # each output: (batch, query_time/scale_factor)
             
-            c_shape = c.size() # b t c
+            c_shape = c.size()  # b t c
             
             query_logits.append(l)
             c = torch.reshape(c, (-1, c_shape[2]))
             query_confidences.append(c)
+
+        support_encodings = torch.cat(support_encoded_chunks, 2)
+            # Collect support embeddings and labels based on pseudovox_offsets
+        for batch_idx in range(support_audio.size(0)):
+            for (start_offset, end_offset), label in zip(support_pseudovox_offsets[batch_idx], support_pseudovox_labels[batch_idx]):
+                if label == -1:
+                    continue  # Skip padding
+
+                start_offset_downsampled = start_offset // self.args.scale_factor
+                end_offset_downsampled = end_offset // self.args.scale_factor
+                if start_offset_downsampled == end_offset_downsampled:
+                    continue
+                support_embed = torch.mean(support_encodings[batch_idx, :, start_offset_downsampled:end_offset_downsampled], dim=1)
+                support_embeddings.append(support_embed)
+                #check for nan
+                if torch.isnan(support_embeddings[-1]).any():
+                    print(f"nan in support embeddings: {batch_idx} {start_offset_downsampled} {end_offset_downsampled} {label}, {support_encodings.shape}")
+                    print(f"original: {start_offset} {end_offset}")
+                    print(support_encodings[batch_idx, :, start_offset:end_offset])
+                support_embedding_labels.append(label)
         
-        query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-        cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
+        # Collect query embeddings and labels based on pseudovox_offsets
+        for batch_idx in range(query_audio.size(0)):
+            for (start_offset, end_offset), label in zip(query_pseudovox_offsets[batch_idx], query_pseudovox_labels[batch_idx]):
+                if label == -1:
+                    continue  # Skip padding
+
+                start_offset = start_offset // self.args.scale_factor
+                end_offset = end_offset // self.args.scale_factor
+                if start_offset == end_offset:
+                    continue
+                query_embedding_labels.append(label)
+                query_embeddings.append(torch.mean(query_audio_encoded[batch_idx, :, start_offset:end_offset], dim=1))
+                if torch.isnan(query_embeddings[-1]).any():
+                    print(f"nan in query embeddings: {batch_idx} {start_offset} {end_offset} {label}, {query_audio_encoded.shape}")
+                    print(f"original: {start_offset} {end_offset}")
+                    print(query_audio_encoded[batch_idx, :, start_offset:end_offset])
+
+        
+
+        support_embeddings = torch.stack(support_embeddings)  # (total_pseudovox, embedding_dim)
+        support_embedding_labels = torch.tensor(support_embedding_labels).to(support_embeddings.device)  # (total_pseudovox)
+        
+        query_embeddings = torch.stack(query_embeddings)  # (total_pseudovox, embedding_dim)
+        query_embedding_labels = torch.tensor(query_embedding_labels).to(query_embeddings.device)  # (total_pseudovox)
+        
+        # Combine support and query embeddings and labels for contrastive loss
+        combined_embeddings = torch.cat([support_embeddings, query_embeddings], dim=0)
+        combined_labels = torch.cat([support_embedding_labels, query_embedding_labels], dim=0)
+        
+        # Compute the contrastive loss
+        contrastive_loss = self.supcon_loss(combined_embeddings, combined_labels)
+        
+        query_confidences = torch.stack(query_confidences, 1)  # bt n_support c
+        cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1)  # bt 1 c
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-        if len(query_logits) == 1 and self.args.simple_transformer == True:
-            print("simple transformer")
-            query_logits = query_logits[0]
-        else:
-            query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
-        query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-        weighted_average_logits=query_logits
+        query_logits = self.confidence_transformer(query_confidences)[:, 0, :].squeeze(-1).squeeze(-1)  # bt 1 1 -> bt
+        query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1]))  # b t
+        weighted_average_logits = query_logits
         
         
         
-#         query_logits = torch.stack(query_logits, 1)
-#         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-        
-#         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
-#         query_confidences = query_confidences.squeeze(2)
-#         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-        
-#         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
-        
-        # downsample query labels, for training
-        if query_labels is not None:
-            query_labels = torch.unsqueeze(query_labels, 1) # (batch, 1, time)
-            query_labels = F.max_pool1d(query_labels, self.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
-            query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
-        
-        return weighted_average_logits, query_labels
+        return weighted_average_logits, query_labels, contrastive_loss
+                
+            
+            
+        #         query_logits = torch.stack(query_logits, 1)
+        #         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+                
+        #         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
+        #         query_confidences = query_confidences.squeeze(2)
+        #         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
+        #         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
+                
+        #         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
+        #         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
+                
 
     def freeze_audio_encoder(self):
         self.audio_encoder.freeze()

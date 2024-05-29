@@ -4,6 +4,8 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import torch
 import torchaudio
+from torch.nn.utils.rnn import pad_sequence
+
 
 SCENARIO_WEIGHTS = {
     "normal": 1,
@@ -48,12 +50,6 @@ def apply_windowing(audio, labels, chunk_size_samples):
     audio = torch.cat((audio[to_cut:], audio))
     labels = torch.cat((labels[to_cut:], labels))
 
-    pad = (chunk_size_samples - (audio.size(0) % chunk_size_samples)) % chunk_size_samples
-
-    if pad > 0:
-        audio = torch.cat((audio, audio[:pad]))
-        labels = torch.cat((labels, labels[:pad]))
-
     return audio, labels
 
 
@@ -90,6 +86,10 @@ class FewshotDataset(Dataset):
         
         self.nonbio_pseudovox_info = self.nonbio_pseudovox_info[self.nonbio_pseudovox_info['duration_sec'] <= self.args.max_pseudovox_duration]
         self.nonbio_clusters_with_enough_examples = pd.Series(sorted(self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts()[self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts() >= self.args.nonbio_min_cluster_size].index))
+        
+        # Create a mapping from birdnet label to integer
+        birdnet_labels = pd.concat([self.pseudovox_info["birdnet_prediction"], self.nonbio_pseudovox_info["birdnet_prediction"]]).unique()
+        self.birdnet_label_to_int = {label: idx for idx, label in enumerate(birdnet_labels)}
         
         # Init augmentations
         self.shift_up = torchaudio.transforms.PitchShift(16000, 12, hop_length=64)
@@ -132,8 +132,8 @@ class FewshotDataset(Dataset):
         
         # Special scenario
         
-        
-        scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] for s in self.scenarios])
+        total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
+        scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
             
         # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
                 
@@ -306,7 +306,6 @@ class FewshotDataset(Dataset):
             audio_query =torch.tile(audio_query, (query_dur_samples//audio_query.size(0)+2,))
         
         audio_support_start_sample = rng.integers(0, audio_support.size(0) - support_dur_samples)
-        #TODO: query background non-overlapping where possible
         audio_query_start_sample = rng.integers(0, audio_query.size(0) - query_dur_samples)
         
         audio_support = audio_support[audio_support_start_sample:audio_support_start_sample+support_dur_samples]
@@ -315,6 +314,12 @@ class FewshotDataset(Dataset):
         # set up labels
         support_labels = torch.zeros_like(audio_support)
         query_labels = torch.zeros_like(audio_query)
+        
+        # initialize lists to store pseudovox labels and frame offsets
+        support_pseudovox_labels = []
+        support_pseudovox_offsets = []
+        query_pseudovox_labels = []
+        query_pseudovox_offsets = []
                 
         # normalize rms of support and query background audio
         rms_background_audio_support = torch.std(audio_support)
@@ -428,8 +433,11 @@ class FewshotDataset(Dataset):
                 
                 audio_support[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
-
-                pseudovox_end = min(pseudovox_start + pseudovox.size(0), support_dur_samples)
+                
+                # store pseudovox label and offset
+                if label == 2:
+                    support_pseudovox_labels.append(self.birdnet_label_to_int[row["birdnet_prediction"]])
+                    support_pseudovox_offsets.append((pseudovox_start, pseudovox_start + pseudovox.size(0)))
 
             for _, row in pseudovox_query.iterrows():
                 dur_aug = {2: focal_duration, 0: nonfocal_duration}[label]
@@ -476,20 +484,24 @@ class FewshotDataset(Dataset):
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
                 
+                # store pseudovox label and offset
+                if label == 2:
+                    query_pseudovox_labels.append(self.birdnet_label_to_int[row["birdnet_prediction"]])
+                    query_pseudovox_offsets.append((pseudovox_start, pseudovox_start + pseudovox.size(0)))
+
         if copy_support:
             slice_start_sample = rng.integers(0, support_dur_samples-query_dur_samples)
             audio_query = audio_support[slice_start_sample:slice_start_sample+query_dur_samples]
             query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
+            query_pseudovox_labels = support_pseudovox_labels
+            query_pseudovox_offsets = [(start-slice_start_sample, end-slice_start_sample) for start, end in support_pseudovox_offsets]
 
         if self.args.window_train_support:
             audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
         
-        
-        
-        
-
-
-        return audio_support, support_labels, audio_query, query_labels
+        return (audio_support, support_labels, audio_query, query_labels, 
+                support_pseudovox_labels, support_pseudovox_offsets, 
+                query_pseudovox_labels, query_pseudovox_offsets)
 
 
     def __len__(self):
@@ -512,6 +524,7 @@ def get_dataloader(args, shuffle = True):
                                   shuffle=shuffle,
                                   num_workers=args.num_workers,
                                   pin_memory=True,
+                                  collate_fn=collate_tensors_and_lists,
                                   drop_last = False)
     return train_dataloader
 
@@ -551,6 +564,37 @@ def get_inference_dataloader(support_audio, support_labels, query_audio, args):
                                       drop_last=False,
                                      )
     return inference_dataloader
+
+
+def collate_tensors_and_lists(batch):
+    support_audios, support_labels, query_audios, query_labels, support_pseudovox_labels, support_pseudovox_offsets, query_pseudovox_labels, query_pseudovox_offsets = zip(*batch)
+    
+    # Stack tensors
+    support_audios = torch.stack(support_audios)
+    support_labels = torch.stack(support_labels)
+    query_audios = torch.stack(query_audios)
+    if query_labels[0] is not None:
+        query_labels = torch.stack(query_labels)
+    else:
+        query_labels = None
+    
+    # Handle empty lists by replacing them with a tensor with one element of padding value
+    support_pseudovox_labels = [torch.tensor(labels) if len(labels) > 0 else torch.tensor([-1]) for labels in support_pseudovox_labels]
+    support_pseudovox_offsets = [torch.tensor(offsets) if len(offsets) > 0 else torch.tensor([[-1, -1]]) for offsets in support_pseudovox_offsets]
+    query_pseudovox_labels = [torch.tensor(labels) if len(labels) > 0 else torch.tensor([-1]) for labels in query_pseudovox_labels]
+    query_pseudovox_offsets = [torch.tensor(offsets) if len(offsets) > 0 else torch.tensor([[-1, -1]]) for offsets in query_pseudovox_offsets]
+    
+    # Pad the lists to the maximum length in the batch
+    support_pseudovox_labels_padded = pad_sequence(support_pseudovox_labels, batch_first=True, padding_value=-1)
+    support_pseudovox_offsets_padded = pad_sequence(support_pseudovox_offsets, batch_first=True, padding_value=-1)
+    query_pseudovox_labels_padded = pad_sequence(query_pseudovox_labels, batch_first=True, padding_value=-1)
+    query_pseudovox_offsets_padded = pad_sequence(query_pseudovox_offsets, batch_first=True, padding_value=-1)
+
+    return (support_audios, support_labels, query_audios, query_labels, 
+            support_pseudovox_labels_padded, support_pseudovox_offsets_padded, 
+            query_pseudovox_labels_padded, query_pseudovox_offsets_padded)
+
+
 
 if __name__ == "__main__":
     # demo usage
@@ -599,10 +643,18 @@ if __name__ == "__main__":
     
     dataloader = get_dataloader(args, shuffle = False)
     
-    for i, (support_audio, support_labels, query_audio, query_labels) in enumerate(dataloader):
+    for i, (support_audio, support_labels, query_audio, query_labels, 
+            support_pseudovox_labels, support_pseudovox_offsets, 
+            query_pseudovox_labels, query_pseudovox_offsets) in enumerate(dataloader):
         
         torchaudio.save(os.path.join(output_dir, f"audio_{i}.wav"), torch.cat([support_audio, query_audio], dim=1), args.sr)
         np.save(os.path.join(output_dir, f"labels_{i}.npy"), torch.cat([support_labels, query_labels], dim=1).numpy())     
+        
+        # Save the pseudovox labels and offsets
+        np.save(os.path.join(output_dir, f"support_pseudovox_labels_{i}.npy"), np.array(support_pseudovox_labels))
+        np.save(os.path.join(output_dir, f"support_pseudovox_offsets_{i}.npy"), np.array(support_pseudovox_offsets))
+        np.save(os.path.join(output_dir, f"query_pseudovox_labels_{i}.npy"), np.array(query_pseudovox_labels))
+        np.save(os.path.join(output_dir, f"query_pseudovox_offsets_{i}.npy"), np.array(query_pseudovox_offsets))
         
         #make selection table
         labels=(torch.cat([support_labels, query_labels], dim=1).squeeze(0).numpy()==2)
