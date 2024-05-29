@@ -53,6 +53,9 @@ class AudioEmbedding(nn.Module):
 class LabelEncoder(nn.Module):
     def __init__(self, args):
         super().__init__()
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
         self.support_seq_len = int(args.support_dur_sec * args.sr / args.scale_factor)
         self.query_seq_len = int(args.query_dur_sec * args.sr / args.scale_factor)
         assert args.support_dur_sec * args.sr / args.scale_factor == self.support_seq_len
@@ -66,11 +69,17 @@ class LabelEncoder(nn.Module):
                 depth = args.label_encoder_depth,
                 heads = args.label_encoder_heads,
                 attn_flash=True,
-                rotary_pos_emb=True
+                rotary_pos_emb=True,
+                ff_swish = True,
+                ff_glu = True
             )
         )
         self.label_embedding=torch.nn.Conv1d(4, args.embedding_dim, 1) #(4, 4, 1)
         self.logits_head = nn.Conv1d(512, 1, 1)
+        
+        sep = torch.normal(torch.zeros((1,args.embedding_dim,1)), torch.ones((1,args.embedding_dim,1)))
+        self.sep_token = torch.nn.parameter.Parameter(data=sep.to(device))
+        
         # self.confidences_head = nn.Conv1d(512, 64, 1)
         self.args = args
 
@@ -90,13 +99,15 @@ class LabelEncoder(nn.Module):
         support_cat = encoded_support_audio + support_labels_downsampled #torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
         query_cat = encoded_query_audio + query_masked_labels #torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
         
-        transformer_input = torch.cat((support_cat, query_cat), dim = 2)
+        sep_token = self.sep_token.expand(query_cat.size(0), -1, -1) # b c 1
+        
+        transformer_input = torch.cat((support_cat, sep_token, query_cat), dim = 2)
         transformer_input = rearrange(transformer_input, 'b c t -> b t c')
         
         transformer_output = self.transformer(transformer_input)
         transformer_output = rearrange(transformer_output, 'b t c -> b c t')
         
-        query_output = transformer_output[:,:,support_len:] # return only embedding for query
+        query_output = transformer_output[:,:,support_len+1:] # return only embedding for query
         logits = self.logits_head(query_output).squeeze(1)
         confidences = rearrange(query_output, 'b c t -> b t c')
         
@@ -157,6 +168,9 @@ class FewShotModel(nn.Module):
                 dim = 128,
                 depth = 2,
                 heads = 2,
+                attn_flash=True,
+                ff_swish = True,
+                ff_glu = True
             )
         )
         
@@ -215,22 +229,9 @@ class FewShotModel(nn.Module):
         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
         cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
+        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1) #bt 1 1 -> bt
         query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
         weighted_average_logits=query_logits
-        
-        
-        
-#         query_logits = torch.stack(query_logits, 1)
-#         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-        
-#         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
-#         query_confidences = query_confidences.squeeze(2)
-#         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-        
-#         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
         
         # downsample query labels, for training
         if query_labels is not None:

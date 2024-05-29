@@ -36,6 +36,19 @@ def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+    
+def get_optimizer(model, args):
+    regularized = []
+    not_regularized = []
+    for name, param in model.named_parameters():
+        if name.endswith(".bias") or len(param.shape) == 1:
+            not_regularized.append(param)
+        else:
+            regularized.append(param)
+    param_groups = [{'params': regularized, "weight_decay": 0.01}, {'params': not_regularized, 'weight_decay': 0.}]
+    args.weight_decay = 0.01
+    optimizer = bnb.optim.AdamW8bit(param_groups, lr=args.lr, amsgrad=True)
+    return optimizer
 
 def main(args):
     ## Setup
@@ -130,7 +143,8 @@ def train(model, args):
     loss_fn = get_loss_fn(args)
   
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
-    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
+    # optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
+    optimizer = get_optimizer(model, args)
     
     if args.unfreeze_encoder_step>0:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.unfreeze_encoder_step)
