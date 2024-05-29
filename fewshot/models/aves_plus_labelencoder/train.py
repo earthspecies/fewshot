@@ -131,13 +131,16 @@ def train(model, args):
   
     # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
     optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
-    # warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    # warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
-    # scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
-    scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
+    
+    if args.unfreeze_encoder_step>0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.unfreeze_encoder_step)
+        warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
+        scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.unfreeze_encoder_step, args.n_steps_warmup+args.unfreeze_encoder_step], last_epoch=-1)
+    else:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
+        scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
   
     scaler = torch.cuda.amp.GradScaler()
     
@@ -155,6 +158,12 @@ def train(model, args):
         
         with torch.cuda.amp.autocast(dtype=torch.float16):
             logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
+            
+            loss_mask_samples = int(logits.size(1)*.1)
+            if loss_mask_samples>0:
+                logits = logits[:,loss_mask_samples:-loss_mask_samples]
+                query_labels = query_labels[:,loss_mask_samples:-loss_mask_samples]
+            
             loss = loss_fn(logits, query_labels)
             
         acc, prec, rec = compute_metrics(logits, query_labels)
@@ -176,8 +185,8 @@ def train(model, args):
                 }
             )
 
-        if t % args.log_steps == 0:
-            print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}")
+        # if t % args.log_steps == 0:
+        #     print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}")
 
 
         # Backpropagation
