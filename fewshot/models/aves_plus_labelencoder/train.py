@@ -31,8 +31,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 # Get cpu or gpu device for training.
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-device = "cpu"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 if device == "cpu":
     import warnings
@@ -57,17 +56,20 @@ def main(args):
     
     world_size = torch.cuda.device_count()
     # world_size = 0
-    dataset = FewshotDataset(args)
+    if args.n_train_steps != 0:
+        dataset = FewshotDataset(args)
 
-    if world_size > 1:
-        mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
+        if world_size > 1:
+            mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
+        else:
+            train(0, dataset, world_size, initialize_model, args, single_gpu=True)
+
+        print("Training Complete!")
+
+        model = initialize_model(args)
+        model.load_state_dict(torch.load(os.path.join(args.experiment_dir, "final_model.pt")))
     else:
-        train(0, dataset, world_size, initialize_model, args, single_gpu=True)
-
-    print("Training Complete!")
-
-    model = initialize_model(args)
-    # model.load_state_dict(torch.load(os.path.join(args.experiment_dir, "final_model.pt")))
+        model = initialize_model(args)
     
     ## Evaluation
     evaluation_manifest = pd.read_csv(args.dcase_evaluation_manifest_fp)
@@ -161,7 +163,6 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
         device = torch.device("cuda", rank)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = "cpu"
 
     if rank == 0:
         wandb.init(project="fewshot")
@@ -260,8 +261,8 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             torch.save(checkpoint_dict, os.path.join(args.experiment_dir, f"model_{t}.pt"))
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)
         
-        if rank == 0:
-            torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
+    if rank == 0:
+        torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
     
     if not single_gpu:
         cleanup()

@@ -12,6 +12,7 @@ from x_transformers import ContinuousTransformerWrapper, Encoder
 
 from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
 
+ADD_LABEL_EMBEDDING = True
 
 class AvesEmbedding(nn.Module):
     def __init__(self, args):
@@ -60,7 +61,7 @@ class LabelEncoder(nn.Module):
         assert args.support_dur_sec * args.sr / args.scale_factor == self.support_seq_len
         assert args.query_dur_sec * args.sr / args.scale_factor == self.query_seq_len
         self.transformer = ContinuousTransformerWrapper(
-            dim_in = args.embedding_dim,
+            dim_in = args.embedding_dim if ADD_LABEL_EMBEDDING else args.embedding_dim+4,
             dim_out = 512,
             max_seq_len = int(self.support_seq_len + self.query_seq_len),
             attn_layers = Encoder(
@@ -69,13 +70,14 @@ class LabelEncoder(nn.Module):
                 heads = args.label_encoder_heads,
                 attn_flash=True,
                 rotary_pos_emb = True,
-                ff_no_bias = True,
                 ff_swish = True,
-                ff_glu = True
+                ff_glu = True,
             )
         )
-        # self.label_embedding=torch.nn.Conv1d(4, args.embedding_dim, 1)
-        self.label_embedding = torch.nn.Linear(4, args.embedding_dim)
+        if ADD_LABEL_EMBEDDING:
+            self.label_embedding = torch.nn.Linear(4, args.embedding_dim)
+        else:
+            self.label_embedding=torch.nn.Conv1d(4, 4, 1)
         self.logits_head = nn.Conv1d(512, 1, 1)
         # self.confidences_head = nn.Conv1d(512, 64, 1)
         self.args = args
@@ -90,20 +92,21 @@ class LabelEncoder(nn.Module):
         query_masked_labels = F.one_hot(query_masked_labels, num_classes=4).float()
         query_masked_labels = rearrange(query_masked_labels, 'b t c -> b c t')
         
-        support_labels_downsampled=self.label_embedding(support_labels_downsampled.reshape(-1,4)).reshape(encoded_support_audio.size(0), self.args.embedding_dim, -1)
-        query_masked_labels=self.label_embedding(query_masked_labels.reshape(-1,4)).reshape(encoded_support_audio.size(0), self.args.embedding_dim, -1)
 
-        support_labels_downsampled = support_labels_downsampled.reshape(encoded_support_audio.size(0), self.args.embedding_dim, -1)
-        query_masked_labels = query_masked_labels.reshape(encoded_query_audio.size(0), self.args.embedding_dim, -1)
+        if ADD_LABEL_EMBEDDING:
+            support_labels_downsampled=self.label_embedding(support_labels_downsampled.reshape(-1,4)).reshape(encoded_support_audio.size(0), self.args.embedding_dim, -1)
+            query_masked_labels=self.label_embedding(query_masked_labels.reshape(-1,4)).reshape(encoded_query_audio.size(0), self.args.embedding_dim, -1)
+        else:
+            support_labels_downsampled = self.label_embedding(support_labels_downsampled)
+            query_masked_labels = self.label_embedding(query_masked_labels)
         
         
-        # support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
-        # query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
-        support_cat = encoded_support_audio + support_labels_downsampled
-        query_cat = encoded_query_audio + query_masked_labels
-
-        # support_cat = encoded_support_audio + support_labels_downsampled
-        # query_cat = encoded_query_audio + query_masked_labels
+        if ADD_LABEL_EMBEDDING:
+            support_cat = encoded_support_audio + support_labels_downsampled
+            query_cat = encoded_query_audio + query_masked_labels
+        else:
+            support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
+            query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
         
         transformer_input = torch.cat((support_cat, query_cat), dim = 2)
         transformer_input = rearrange(transformer_input, 'b c t -> b t c')
@@ -179,12 +182,11 @@ class FewShotModel(nn.Module):
                 heads = 2,
                 ff_swish = True,
                 ff_glu = True,
-                attn_flash=True
+                attn_flash=True,
             )
         )
         
-        # device = "cuda" if torch.cuda.is_available() else "cpu"
-        device = "cpu"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
          
         cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
         self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
@@ -200,12 +202,13 @@ class FewShotModel(nn.Module):
         Output
             logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
         """
-        
         # pad and normalize audio
-        support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
+        # support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
+        support_pad_len = self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)
         if support_pad_len>0:
             support_audio = F.pad(support_audio, (0,support_pad_len))
             support_labels = F.pad(support_labels, (0,support_pad_len))
+
         
         normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
         normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
@@ -221,13 +224,13 @@ class FewShotModel(nn.Module):
         query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
             
         support_len_samples = support_audio.size(1)
-        print(f"support shape: {support_audio.shape}")
         for start_sample in range(0, support_len_samples, self.audio_chunk_size_samples):
             support_audio_sub = support_audio[:, start_sample:start_sample+self.audio_chunk_size_samples]
             support_audio_sub_encoded = self.audio_encoder(support_audio_sub)
             
             support_labels_sub = support_labels[:, start_sample:start_sample+self.audio_chunk_size_samples]
             support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1) # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
+
             
             l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
             
