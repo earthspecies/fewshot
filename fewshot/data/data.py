@@ -256,6 +256,7 @@ class FewshotDataset(Dataset):
         
         audio_support = audio_support[audio_support_start_sample:audio_support_start_sample+support_dur_samples]
         audio_query = audio_query[audio_query_start_sample:audio_query_start_sample+query_dur_samples]
+        denoised_audio_query = torch.zeros_like(audio_query)
         
         # set up labels
         support_labels = torch.zeros_like(audio_support)
@@ -421,17 +422,20 @@ class FewshotDataset(Dataset):
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
                 
-        if copy_support:
-            slice_start_sample = rng.integers(0, support_dur_samples-query_dur_samples)
-            audio_query = audio_support[slice_start_sample:slice_start_sample+query_dur_samples]
-            query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
+                if label == 2:
+                    denoised_audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
+                
+        # if copy_support:
+        #     slice_start_sample = rng.integers(0, support_dur_samples-query_dur_samples)
+        #     audio_query = audio_support[slice_start_sample:slice_start_sample+query_dur_samples]
+        #     query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
 
-        return audio_support, support_labels, audio_query, query_labels
+        return audio_support, support_labels, audio_query, query_labels, denoised_audio_query
 
 
     def __len__(self):
         return self.args.n_synthetic_examples
-      
+
 def get_dataloader(args, shuffle = True):
     dataset = FewshotDataset(args)
 
@@ -469,7 +473,7 @@ class InferenceDataset(Dataset):
     
     def __len__(self):
         return 1 + (self.query_audio.size(0) - self.query_dur_samples) // self.hop_samples
-    
+
 def get_inference_dataloader(support_audio, support_labels, query_audio, args):
     dataset = InferenceDataset(support_audio, support_labels, query_audio, args)
     
@@ -526,9 +530,10 @@ if __name__ == "__main__":
     
     dataloader = get_dataloader(args, shuffle = False)
     
-    for i, (support_audio, support_labels, query_audio, query_labels) in enumerate(dataloader):
+    for i, (support_audio, support_labels, query_audio, query_labels, denoised_query_audio) in enumerate(dataloader):
         
         torchaudio.save(os.path.join(output_dir, f"audio_{i}.wav"), torch.cat([support_audio, query_audio], dim=1), args.sr)
+        torchaudio.save(os.path.join(output_dir, f"denoised_query_audio_{i}.wav"), denoised_query_audio, args.sr)
         np.save(os.path.join(output_dir, f"labels_{i}.npy"), torch.cat([support_labels, query_labels], dim=1).numpy())     
         
         #make selection table
@@ -563,6 +568,6 @@ if __name__ == "__main__":
 
         d = pd.DataFrame(d)
         d.to_csv(os.path.join(output_dir, f"selection_table_{i}.txt"), sep='\t', index=False)
+
         
-        
-    
+

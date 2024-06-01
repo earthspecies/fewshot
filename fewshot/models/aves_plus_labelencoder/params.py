@@ -39,6 +39,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--n-steps-warmup', type=int, default=10000)
     parser.add_argument('--log-steps', type=int, default=100)
     parser.add_argument('--wandb', type=bool, default=False, help="log to wandb")
+    parser.add_argument('--denoising-loss-weight', type=float, default=1, help='how much to weight denoising objective vs classification objective')
     
     # Data
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')

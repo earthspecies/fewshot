@@ -55,7 +55,8 @@ def process_dcase(audio, annotations, args):
         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
         annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/args.sr) & (annot_pos['Starttime'] < chunk_end/args.sr)]
         annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/args.sr) & (annot_pos['Endtime'] < chunk_end/args.sr)]
-        if len(annot_pos_start_sub) + len(annot_pos_end_sub)>0:
+        annot_pos_long_sub = annot_pos[(annot_pos['Starttime'] < chunk_start/args.sr) & (annot_pos['Endtime'] >= chunk_end/args.sr)]
+        if len(annot_pos_start_sub) + len(annot_pos_end_sub) + len(annot_pos_long_sub)>0:
             chunks_to_keep.append(chunk_start)
         else:
             chunks_to_maybe_keep.append(chunk_start)
@@ -227,28 +228,20 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     query_confidences = torch.stack(query_confidences, 1) # bt n_support c
     cls_token = model.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
     query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-    query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
-    query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-    weighted_average_logits=query_logits
+    
+    query_outputs = model.confidence_transformer(query_confidences)[:,0,:] # bt c
+    query_outputs = torch.reshape(query_outputs, (c_shape[0], c_shape[1], -1)) # b t c
 
-#     query_logits = torch.stack(query_logits, 1)
-#     query_confidences = torch.stack(query_confidences, 1) # bt n_support c
+    query_logits = model.detection_head(query_outputs).squeeze(2)
+    # query_denoised_spec_prediction = self.denoising_head(query_outputs)
+    # query_denoised_spec_prediction = rearrange(query_denoised_spec_prediction, 'b c t -> b t c')
 
-#     query_confidences = model.confidence_transformer(query_confidences) # bt n_support 1
-#     query_confidences = query_confidences.squeeze(2)
-#     query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#     query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-
-#     weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#     weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
-
-    # downsample query labels, for training
     if query_labels is not None:
         query_labels = torch.unsqueeze(query_labels, 1) # (batch, 1, time)
         query_labels = F.max_pool1d(query_labels, model.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
         query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
 
-    return weighted_average_logits, query_labels
+    return query_logits, query_labels
 
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")

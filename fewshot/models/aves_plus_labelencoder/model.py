@@ -161,18 +161,20 @@ class FewShotModel(nn.Module):
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
         self.confidence_transformer = ContinuousTransformerWrapper(
             dim_in = 512,
-            dim_out = 1,
+            dim_out = 256,
             max_seq_len = 0,
             use_abs_pos_emb = False,
             attn_layers = Encoder(
-                dim = 128,
-                depth = 2,
-                heads = 2,
+                dim = 256,
+                depth = 4,
+                heads = 4,
                 attn_flash=True,
                 ff_swish = True,
                 ff_glu = True
             )
         )
+        self.detection_head = nn.Linear(256, 1)
+        self.denoising_head = nn.Linear(256, 128)
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
          
@@ -229,9 +231,12 @@ class FewShotModel(nn.Module):
         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
         cls_token = self.cls_token.expand(query_confidences.size(0), -1, -1) # bt 1 c
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
-        query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1) #bt 1 1 -> bt
-        query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-        weighted_average_logits=query_logits
+        query_outputs = self.confidence_transformer(query_confidences)[:,0,:] # bt c
+        query_outputs = torch.reshape(query_outputs, (c_shape[0], c_shape[1], -1)) # b t c
+        
+        query_logits = self.detection_head(query_outputs)
+        query_denoised_spec_prediction = self.denoising_head(query_outputs)
+        query_denoised_spec_prediction = rearrange(query_denoised_spec_prediction, 'b c t -> b t c')
         
         # downsample query labels, for training
         if query_labels is not None:
@@ -239,7 +244,7 @@ class FewShotModel(nn.Module):
             query_labels = F.max_pool1d(query_labels, self.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
             query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
         
-        return weighted_average_logits, query_labels
+        return query_logits, query_labels, query_denoised_spec_prediction
 
     def freeze_audio_encoder(self):
         self.audio_encoder.freeze()

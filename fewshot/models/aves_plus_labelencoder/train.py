@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import torchaudio
 import tqdm
 from functools import partial
 import os
@@ -84,7 +85,7 @@ def main(args):
     outputs = []
     print("Evaluation")
     for i, row in tqdm.tqdm(evaluation_manifest.iterrows(), total=len(evaluation_manifest)):
-        # if '/RD/' not in row['audio_fp']:
+        # if '/RD/' in row['audio_fp']:
         #     continue
         d = inference_dcase(model, args, row['audio_fp'], row['annotation_fp'])
         outputs.append(d)
@@ -96,17 +97,26 @@ def main(args):
     evaluate_dcase(output_fp, args.dcase_ref_files_path, args.name, "DCASE", args.experiment_dir)
 
 def get_loss_fn(args):
-    def loss_fn(logits, query_labels):
-        # query labels: 0: NEG, 1: UNK, 2: POS
+    def loss_fn(logits, query_labels, query_audio_denoised_spec, query_audio_denoised_spec_prediction):
+        # query labels: 0: NEG, 1: UNK, 2: POS (currently 1 is not used)
+        # query_audio_denoised_spec(_prediction) : (batch, channels, time)
+        
+        denoise_loss = (query_audio_denoised_spec - query_audio_denoised_spec_prediction) ** 2
+        denoise_loss = torch.nan_to_num(denoise_loss) # rarely spec has nans? dunno why, mask it out
+        denoise_loss = torch.mean(denoise_loss, 1) # (batch, time)
+        denoise_loss_mask = query_labels>0
+        denoise_loss = denoise_loss * denoise_loss_mask # remove sections with no focal pseudovox
+        denoise_loss = torch.mean(denoise_loss)
+        
         logits=torch.flatten(logits)
         query_labels=torch.flatten(query_labels)
         
         query_binary = torch.minimum(query_labels, torch.ones_like(query_labels)) #2->1
-        loss = sigmoid_focal_loss(logits, query_binary) #TODO add in loss hyperparams?
+        detection_loss = sigmoid_focal_loss(logits, query_binary) #TODO add in loss hyperparams?
         unknown_mask = query_labels != 1
-        loss = loss * unknown_mask # set loss of unknowns to 0
-        loss = torch.mean(loss)
-        return loss
+        detection_loss = detection_loss * unknown_mask # set loss of unknowns to 0
+        detection_loss = torch.mean(detection_loss)
+        return detection_loss, args.denoising_loss_weight*denoise_loss
         
     return loss_fn
 
@@ -141,10 +151,12 @@ def train(model, args):
     torch.compile(model)
   
     loss_fn = get_loss_fn(args)
+    melspec = torchaudio.transforms.MelSpectrogram(n_fft=800, n_mels=128, hop_length=320) #default n_mels = 128
+    melspec = melspec.to(device)
   
-    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
     # optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
-    optimizer = get_optimizer(model, args)
+    # optimizer = get_optimizer(model, args)
     
     if args.unfreeze_encoder_step>0:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.unfreeze_encoder_step)
@@ -156,9 +168,9 @@ def train(model, args):
         cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
         scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
   
-    scaler = torch.cuda.amp.GradScaler()
+    # scaler = torch.cuda.amp.GradScaler()
     
-    history={'loss' : [], 'learning_rate' : [], 'accuracy' : [], 'precision':[], 'recall':[]}
+    history={'detection_loss' : [], 'denoising_loss' : [], 'learning_rate' : [], 'accuracy' : [], 'precision':[], 'recall':[]}
     
     dataloader=get_dataloader(args)
     
@@ -168,21 +180,27 @@ def train(model, args):
         if t == args.unfreeze_encoder_step:
             model.unfreeze_audio_encoder()
         
-        support_audio, support_labels, query_audio, query_labels = data_item
+        support_audio, support_labels, query_audio, query_labels, query_audio_denoised = data_item
         
-        with torch.cuda.amp.autocast(dtype=torch.float16):
-            logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
-            
-            loss_mask_samples = int(logits.size(1)*.1)
-            if loss_mask_samples>0:
-                logits = logits[:,loss_mask_samples:-loss_mask_samples]
-                query_labels = query_labels[:,loss_mask_samples:-loss_mask_samples]
-            
-            loss = loss_fn(logits, query_labels)
+        # with torch.cuda.amp.autocast(dtype=torch.float16):
+        logits, query_labels, query_audio_denoised_spec_prediction = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
+
+
+        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        query_audio_denoised = (query_audio_denoised - torch.mean(query_audio_denoised, dim=1,keepdim=True)) / normalization_factor
+
+        query_audio_denoised_spec = melspec(query_audio_denoised.to(device))[:,:,:query_labels.size(1)] # [batch, channels, time]. Need to chop off one extra time bin.
+        query_audio_denoised_spec = torch.log(query_audio_denoised_spec + torch.full_like(query_audio_denoised_spec, 1e-6))
+        query_audio_denoised_spec = query_audio_denoised_spec - torch.amin(query_audio_denoised_spec, (1,2), keepdim=True)
+        query_audio_denoised_spec = query_audio_denoised_spec / (torch.amax(query_audio_denoised_spec, (1,2), keepdim=True) + torch.full_like(query_audio_denoised_spec, 1e-6))
+
+        detection_loss, denoising_loss = loss_fn(logits, query_labels, query_audio_denoised_spec, query_audio_denoised_spec_prediction)
             
         acc, prec, rec = compute_metrics(logits, query_labels)
-        
-        history['loss'].append(loss.item())
+                
+        history['detection_loss'].append(detection_loss.item())
+        history['denoising_loss'].append(denoising_loss.item())
         history['learning_rate'].append(optimizer.param_groups[0]["lr"])
         history['accuracy'].append(float(acc.item()))
         history['precision'].append(float(prec.item()))
@@ -191,7 +209,8 @@ def train(model, args):
         if args.wandb:
             wandb.log(
                 {
-                    "loss": loss.item(),
+                    "detection_loss": detection_loss.item(),
+                    "denoising_loss": denoising_loss.item(),
                     "accuracy": acc.item(),
                     "precision": prec.item(),
                     "recall": rec.item(),
@@ -205,16 +224,19 @@ def train(model, args):
 
         # Backpropagation
         optimizer.zero_grad()
-        # loss.backward()
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
+        loss = detection_loss+denoising_loss
+        loss.backward()
+        
+        # scaler.scale(detection_loss+denoising_loss).backward()
+        # scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-        scaler.step(optimizer)
+        # scaler.step(optimizer)
+        optimizer.step()
         scheduler.step()
-        scaler.update()
+        # scaler.update()
         
         if (t % args.checkpoint_frequency == 0) or (t==len(dataloader)-1):
-            print(f"Step {t}: Loss={np.mean(history['loss'][-args.checkpoint_frequency:])}, Accuracy={np.mean(history['accuracy'][-args.checkpoint_frequency:])}, Precision={np.mean(history['precision'][-args.checkpoint_frequency:])}, Recall={np.mean(history['recall'][-args.checkpoint_frequency:])}")
+            print(f"Step {t}: Detection Loss={np.mean(history['detection_loss'][-args.checkpoint_frequency:])}, Denoising Loss={np.mean(history['denoising_loss'][-args.checkpoint_frequency:])}, Accuracy={np.mean(history['accuracy'][-args.checkpoint_frequency:])}, Precision={np.mean(history['precision'][-args.checkpoint_frequency:])}, Recall={np.mean(history['recall'][-args.checkpoint_frequency:])}")
             with open(os.path.join(args.experiment_dir, "history.yaml"), 'w') as f:
                 yaml.dump(history, f)
             checkpoint_dict = {
