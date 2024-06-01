@@ -337,10 +337,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
         
         all_query_predictions = np.load(np_fp)
-        # sigmoid
-        all_query_predictions = torch.tensor(all_query_predictions)
-        all_query_predictions = torch.sigmoid(all_query_predictions)
-        all_query_predictions = all_query_predictions.numpy()
+
     #
         
     else:
