@@ -7,9 +7,7 @@ import torch
 import torch.nn.functional as F
 import tqdm
 from functools import partial
-import os
 from einops import rearrange
-import yaml
 from pathlib import Path
 from torchvision.ops import sigmoid_focal_loss
 import random
@@ -19,7 +17,6 @@ import wandb
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from pathlib import Path
 
 from fewshot.models.aves_plus_labelencoder.model import FewShotModel
 from fewshot.models.aves_plus_labelencoder.params import parse_args, save_params
@@ -36,7 +33,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 if device == "cpu":
     import warnings
     warnings.warn("Only using CPU! Check CUDA")
-    
+
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -55,21 +52,16 @@ def main(args):
     save_params(args)
     
     world_size = torch.cuda.device_count()
-    # world_size = 0
-    if args.n_train_steps != 0:
-        dataset = FewshotDataset(args)
+    dataset = FewshotDataset(args)
 
-        if world_size > 1:
-            mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
-        else:
-            train(0, dataset, world_size, initialize_model, args, single_gpu=True)
-
-        print("Training Complete!")
-
-        model = initialize_model(args)
-        model.load_state_dict(torch.load(os.path.join(args.experiment_dir, "final_model.pt")))
+    if world_size > 1:
+        mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
     else:
-        model = initialize_model(args)
+        train(0, dataset, world_size, initialize_model, args, single_gpu=True)
+
+    print("Training Complete!")
+
+    model = initialize_model(args)
     
     ## Evaluation
     evaluation_manifest = pd.read_csv(args.dcase_evaluation_manifest_fp)
@@ -88,12 +80,11 @@ def main(args):
 
 def get_loss_fn(args):
     def loss_fn(logits, query_labels):
-        # query labels: 0: NEG, 1: UNK, 2: POS
         logits = torch.flatten(logits)
         query_labels = torch.flatten(query_labels)
         
         query_binary = torch.minimum(query_labels, torch.ones_like(query_labels))  # 2->1
-        loss = sigmoid_focal_loss(logits, query_binary)  # TODO add in loss hyperparams?
+        loss = sigmoid_focal_loss(logits, query_binary)  
         unknown_mask = query_labels != 1
         loss = loss * unknown_mask  # set loss of unknowns to 0
         loss = torch.mean(loss)
@@ -191,10 +182,8 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(dataloader), eta_min=0, last_epoch=-1)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
     
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
     history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': []}
-    
-    
     
     for t, data_item in tqdm.tqdm(enumerate(dataloader), total=len(dataloader)):
         if t == args.unfreeze_encoder_step:
@@ -204,8 +193,20 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
                 model.unfreeze_audio_encoder()
         
         support_audio, support_labels, query_audio, query_labels = data_item
-        
-        with torch.cuda.amp.autocast():
+
+        if args.mixed_precision:
+            with torch.cuda.amp.autocast():
+                logits, query_labels = model(
+                    support_audio.to(device=device, dtype=torch.float),
+                    support_labels.to(device=device, dtype=torch.float),
+                    query_audio.to(device=device, dtype=torch.float),
+                    query_labels=query_labels.to(device=device, dtype=torch.float)
+                )
+                loss = loss_fn(logits, query_labels)
+                loss = loss / args.gradient_accumulation_steps
+
+            scaler.scale(loss).backward()
+        else:
             logits, query_labels = model(
                 support_audio.to(device=device, dtype=torch.float),
                 support_labels.to(device=device, dtype=torch.float),
@@ -214,8 +215,8 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             )
             loss = loss_fn(logits, query_labels)
             loss = loss / args.gradient_accumulation_steps
-        
-        scaler.scale(loss).backward()
+
+            loss.backward()
         
         acc, prec, rec = compute_metrics(logits, query_labels)
         
@@ -239,12 +240,18 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
                 print(f"Step {t}: Loss={np.mean(history['loss'][-10:])}, Accuracy={np.mean(history['accuracy'][-10:])}, Precision={np.mean(history['precision'][-10:])}, Recall={np.mean(history['recall'][-10:])}")
 
         if (t + 1) % args.gradient_accumulation_steps == 0 or (t + 1 == len(dataloader)):
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            scaler.step(optimizer)
-            scheduler.step()
-            optimizer.zero_grad()
-            scaler.update()
+            if args.mixed_precision:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                scaler.step(optimizer)
+                scheduler.step()
+                optimizer.zero_grad()
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
         
         if rank == 0 and ((t % args.checkpoint_frequency == 0) or (t == len(dataloader) - 1)):
             print(f"Step {t}: Loss={np.mean(history['loss'][-args.checkpoint_frequency:])}, Accuracy={np.mean(history['accuracy'][-args.checkpoint_frequency:])}, Precision={np.mean(history['precision'][-args.checkpoint_frequency:])}, Recall={np.mean(history['recall'][-args.checkpoint_frequency:])}")
@@ -261,8 +268,8 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             torch.save(checkpoint_dict, os.path.join(args.experiment_dir, f"model_{t}.pt"))
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)
         
-    if rank == 0:
-        torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
+        if rank == 0:
+            torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
     
     if not single_gpu:
         cleanup()

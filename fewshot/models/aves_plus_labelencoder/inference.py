@@ -185,35 +185,25 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
     pred_sr = args.sr // args.scale_factor
     audio_fn = os.path.basename(audio_fp)
 
-    print("all query predictions", all_query_predictions[0:10])
-    print(f"query pred stats: min: {np.min(all_query_predictions)} max: {np.max(all_query_predictions)} mean: {np.mean(all_query_predictions)}, std: {np.std(all_query_predictions)}")
-
-    print(f"query_predictions shape: {all_query_predictions.shape} support_annotations shape: {support_annotations.shape}")
     avg_event_duration = calculate_average_event_duration(support_annotations, args.sr)
     avg_event_duration_frames = avg_event_duration * pred_sr
     # threshold = calculate_adaptive_threshold(avg_event_duration)
-
-    print(f"threshold: {threshold} avg_event_duration: {avg_event_duration}")
     
     
-    median_filter_window_size = max(3, int(avg_event_duration_frames // 4))  # Quarter of the average event duration, minimum of 3
-    print(f"avg event frames {avg_event_duration_frames} median filter window size: {median_filter_window_size}")
-    threshold = 0.5
-    # Apply median filtering
+    # median_filter_window_size = max(3, int(avg_event_duration_frames // 4))  # Quarter of the average event duration, minimum of 3
+    # print(f"avg event frames {avg_event_duration_frames} median filter window size: {median_filter_window_size}")
     # all_query_predictions = np.apply_along_axis(lambda x: median_filter(x, median_filter_window_size), 0, all_query_predictions)
+
     if threshold == None:
         all_query_predictions_binary = all_query_predictions >= args.inference_threshold # TODO
     else:
         all_query_predictions_binary = all_query_predictions >= threshold
     preds = all_query_predictions_binary
-    print(preds)
     
     # fill gaps and omit extremely short predictions
     max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
     min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
-    
-    # preds = fill_holes(all_query_predictions_binary, min(int(pred_sr*max_hole_size_sec), int(avg_event_duration_frames / 2)))
-    # preds = delete_short(preds, min(int(pred_sr*min_vox_dur_sec), int(avg_event_duration_frames / 2)))
+
     preds = fill_holes(preds, int(pred_sr*max_hole_size_sec))
     preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
     

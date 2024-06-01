@@ -11,6 +11,7 @@ import json
 from x_transformers import ContinuousTransformerWrapper, Encoder
 
 from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
+from fewshot.models.aves_plus_labelencoder.frame_atst import get_timestamp_embedding, load_model
 
 ADD_LABEL_EMBEDDING = True
 
@@ -159,12 +160,29 @@ class AvesEncoder(nn.Module):
     def unfreeze(self):
         self.aves_embedding.unfreeze()
 
+class ATSTEncoder(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.atst = load_model(args.atst_model_path, device=device)
+        self.args = args
+    
+    def forward(self, x):
+        encoding = get_timestamp_embedding(x, self.atst)
+        return encoding
+    
+    def freeze(self):
+        self.atst.freeze()
+
+    def unfreeze(self):
+        self.atst.unfreeze()
+
 class FewShotModel(nn.Module):
     def __init__(self, args):
         super().__init__()
-
-        if False:
-            self.audio_encoder = create_htsat_model(HTSATConfig())
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if args.atst_frame:
+            self.audio_encoder = ATSTEncoder(args)
         else:
             self.audio_encoder = AvesEncoder(args)
 
@@ -186,7 +204,7 @@ class FewShotModel(nn.Module):
             )
         )
         
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
          
         cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
         self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
@@ -206,7 +224,6 @@ class FewShotModel(nn.Module):
         # support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
         support_pad_len = self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)
         if support_pad_len>0:
-            support_audio = F.pad(support_audio, (0,support_pad_len))
             support_labels = F.pad(support_labels, (0,support_pad_len))
 
         
