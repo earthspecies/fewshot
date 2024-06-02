@@ -30,7 +30,7 @@ def parse_args(args,allow_unknown=False):
     
     # Training
     parser.add_argument('--batch-size', type=int, default=8)
-    parser.add_argument('--num-workers', type=int, default=8)
+    parser.add_argument('--num-workers', type=int, default=12)
     parser.add_argument('--lr', type=float, default=.0001) 
     parser.add_argument('--unfreeze-encoder-step', type=int, default=5000)
     parser.add_argument('--checkpoint-frequency', type=int, default=200)
