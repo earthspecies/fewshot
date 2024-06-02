@@ -237,9 +237,9 @@ def cache_support_encoded(model, support_audio):
     if support_pad_len>0:
         support_audio = F.pad(support_audio, (0,support_pad_len))
         
-    normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-    normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-    support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+    # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+    # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+    # support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
     
     support_len_samples = support_audio.size(1)
     
@@ -271,9 +271,9 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     if support_pad_len>0:
         support_labels = F.pad(support_labels, (0,support_pad_len))
 
-    normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-    normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-    query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+    # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+    # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+    # query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
 
     # encode audio and labels
     query_logits = []

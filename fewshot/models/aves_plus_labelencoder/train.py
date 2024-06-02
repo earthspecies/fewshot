@@ -68,6 +68,8 @@ def main(args):
     outputs = []
     print("Evaluation")
     for i, row in tqdm.tqdm(evaluation_manifest.iterrows(), total=len(evaluation_manifest)):
+        if "ME" not in row['audio_fp']:
+            continue
         d = inference_dcase(model, args, row['audio_fp'], row['annotation_fp'])
         outputs.append(d)
         
@@ -178,9 +180,10 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
         dataloader = get_dataloader(args)
     
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
-    warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+    # warmup2_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(dataloader), eta_min=0, last_epoch=-1)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
+    # scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, warmup2_scheduler, cosine_scheduler], [args.n_steps_warmup, args.n_steps_warmup*2], last_epoch=-1)
     
     scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
     history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': []}

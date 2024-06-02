@@ -227,10 +227,10 @@ class FewShotModel(nn.Module):
             support_labels = F.pad(support_labels, (0,support_pad_len))
 
         
-        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
-        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+        # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        # support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+        # query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
         
         # encode audio and labels
         query_logits = []
@@ -248,7 +248,6 @@ class FewShotModel(nn.Module):
             support_labels_sub = support_labels[:, start_sample:start_sample+self.audio_chunk_size_samples]
             support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1) # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
 
-            
             l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
             
             c_shape = c.size() # b t c
