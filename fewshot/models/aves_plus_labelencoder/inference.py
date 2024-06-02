@@ -66,7 +66,7 @@ def process_dcase(audio, annotations, args):
         to_add = chunks_to_maybe_keep.pop()
         chunks_to_keep.append(to_add)
         
-    chunks_to_keep = sorted(chunks_to_keep)
+    chunks_to_keep = sorted(chunks_to_keep)[:max_n_chunks_to_keep]
     support_audio_new = []
     support_annot_new = []
     for chunk_start in chunks_to_keep:
@@ -300,9 +300,9 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     query_confidences = torch.cat([cls_token, query_confidences], dim=1)
     query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
     query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-    weighted_average_logits=query_logits
+    query_logits = torch.sigmoid(query_logits)    
     # sigmoid
-    query_logits = torch.sigmoid(query_logits)
+    
 
 #     query_logits = torch.stack(query_logits, 1)
 #     query_confidences = torch.stack(query_confidences, 1) # bt n_support c
@@ -321,7 +321,7 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
         query_labels = F.max_pool1d(query_labels, model.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
         query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
 
-    return weighted_average_logits, query_labels
+    return query_logits, query_labels
 
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
@@ -365,10 +365,10 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         else:
             to_cut = remainder+model.audio_chunk_size_samples//2
                     
-        halfwindowed_audio_len = support_audio[to_cut:].size(0)
-        assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
-        support_audio = torch.cat((support_audio[to_cut:], support_audio))
-        support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
+        # halfwindowed_audio_len = support_audio[to_cut:].size(0)
+        # assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
+        # support_audio = torch.cat((support_audio[to_cut:], support_audio))
+        # support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
         
         # Pad out so we don't have empty sounds
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
@@ -410,12 +410,14 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
                 all_query_predictions.append(query_predictions)
         
         
-        all_query_predictions = torch.cat(all_query_predictions, dim=0)
-        assert all_query_predictions.size(1) % 4 == 0
-        quarter_window = all_query_predictions.size(1)//4
+        all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
+        all_query_predictions = all_query_predictions.reshape(-1)
         
-        all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
-        all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
+        # assert all_query_predictions.size(1) % 4 == 0
+        # quarter_window = all_query_predictions.size(1)//4
+        
+        # all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
+        # all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
         
         #remove query padding        
         if query_pad // args.scale_factor > 0:
@@ -460,7 +462,6 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         # save np array of predictions
         fn = os.path.basename(audio_fp)
         np.save(os.path.join(args.experiment_dir, fn[:-4]+".npy"), all_query_predictions)
-    
     d = postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, support_annotations)
     
     # Save raven st

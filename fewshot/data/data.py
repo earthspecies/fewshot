@@ -513,7 +513,7 @@ class InferenceDataset(Dataset):
         # support_audio (Tensor) : (support_dur_samples,)
         # support_labels (Tensor) : (support_dur_samples,)
         # query_audio (Tensor) : (query_dur_samples)
-        hop_ratio = 0.5
+        hop_ratio = 1.0
         self.args = args
         self.support_audio = support_audio
         self.support_labels = support_labels

@@ -51,15 +51,15 @@ def main(args):
 
     save_params(args)
     
-    world_size = torch.cuda.device_count()
-    dataset = FewshotDataset(args)
+    # world_size = torch.cuda.device_count()
+    # dataset = FewshotDataset(args)
 
-    if world_size > 1:
-        mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
-    else:
-        train(0, dataset, world_size, initialize_model, args, single_gpu=True)
+    # if world_size > 1:
+    #     mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
+    # else:
+    #     train(0, dataset, world_size, initialize_model, args, single_gpu=True)
 
-    print("Training Complete!")
+    # print("Training Complete!")
 
     model = initialize_model(args)
     
@@ -68,8 +68,8 @@ def main(args):
     outputs = []
     print("Evaluation")
     for i, row in tqdm.tqdm(evaluation_manifest.iterrows(), total=len(evaluation_manifest)):
-        if "ME" not in row['audio_fp']:
-            continue
+        # if "HB" not in row['audio_fp']:
+        #     continue
         d = inference_dcase(model, args, row['audio_fp'], row['annotation_fp'])
         outputs.append(d)
         
