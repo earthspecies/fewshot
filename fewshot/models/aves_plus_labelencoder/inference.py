@@ -365,10 +365,10 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         else:
             to_cut = remainder+model.audio_chunk_size_samples//2
                     
-        # halfwindowed_audio_len = support_audio[to_cut:].size(0)
-        # assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
-        # support_audio = torch.cat((support_audio[to_cut:], support_audio))
-        # support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
+        halfwindowed_audio_len = support_audio[to_cut:].size(0)
+        assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
+        support_audio = torch.cat((support_audio[to_cut:], support_audio))
+        support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
         
         # Pad out so we don't have empty sounds
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
@@ -410,19 +410,60 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
                 all_query_predictions.append(query_predictions)
         
         
-        all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
-        all_query_predictions = all_query_predictions.reshape(-1)
+        # all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
+        # all_query_predictions = all_query_predictions.reshape(-1)
         
         # assert all_query_predictions.size(1) % 4 == 0
         # quarter_window = all_query_predictions.size(1)//4
         
         # all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
         # all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
-        
-        #remove query padding        
+
+        # Concatenate all query predictions along the batch dimension
+        all_query_predictions = torch.cat(all_query_predictions, dim=0)
+        chunk_size = all_query_predictions.size(1)
+
+        # Ensure chunk_size is valid for the logic
+        assert chunk_size >= 4, "Chunk size must be at least 4 for quarter-windowing to work."
+
+        # Calculate dynamic quarter sizes
+        quarter_size = chunk_size // 4
+        remaining = chunk_size % 4
+
+        # Adjust sizes for the first, middle, and last parts
+        first_part_size = quarter_size + (remaining // 2)
+        last_part_size = quarter_size + (remaining - (remaining // 2))
+        middle_part_size = chunk_size - first_part_size - last_part_size
+
+        # Ensure calculated sizes are valid
+        assert first_part_size + middle_part_size + last_part_size == chunk_size, "Sizes do not sum up correctly."
+
+        # Perform the windowing
+        all_query_predictions_windowed = all_query_predictions[:, first_part_size:-last_part_size]
+        # Ensure windowed predictions are valid
+        assert all_query_predictions_windowed.size(1) == middle_part_size, "Windowed prediction size is incorrect."
+
+        # Reshape the windowed predictions
+        all_query_predictions_windowed = torch.reshape(all_query_predictions_windowed, (-1,))
+
+        # Concatenate first, middle, and last parts
+        all_query_predictions = torch.cat((
+            all_query_predictions[0, :first_part_size],
+            all_query_predictions_windowed,
+            all_query_predictions[-1, -last_part_size:]
+        )).cpu().numpy()
+
+        # Ensure final predictions are in the range [0, 1]
+        assert np.all((all_query_predictions >= 0) & (all_query_predictions <= 1)), "Predictions are out of range [0, 1]."
+
+        # Remove query padding if necessary
         if query_pad // args.scale_factor > 0:
-            all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)] # omit predictions for padded region at end of query
-        
+            all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)]  # omit predictions for padded region at end of query
+
+        # Ensure final shape and values are correct
+        print(f"Final shape of all_query_predictions: {all_query_predictions.shape}")
+        assert all_query_predictions.shape[0] > 0, "Final predictions array is empty."
+
 #         ##
 #         with torch.no_grad():
 #             for i, data_item in tqdm(enumerate(support_dataloader)):
