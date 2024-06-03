@@ -80,7 +80,6 @@ class LabelEncoder(nn.Module):
         else:
             self.label_embedding=torch.nn.Conv1d(4, 4, 1)
         self.logits_head = nn.Conv1d(512, 1, 1)
-        # self.confidences_head = nn.Conv1d(512, 64, 1)
         self.args = args
 
     def forward(self, encoded_support_audio, support_labels_downsampled, encoded_query_audio):
@@ -227,6 +226,7 @@ class FewShotModel(nn.Module):
             support_labels = F.pad(support_labels, (0,support_pad_len))
 
         
+        #NOTE: ATST has its own MinMax scaler
         # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
         # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
         # support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
@@ -261,20 +261,6 @@ class FewShotModel(nn.Module):
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
         query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
         query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-        weighted_average_logits=query_logits
-        
-        
-        
-#         query_logits = torch.stack(query_logits, 1)
-#         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-        
-#         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
-#         query_confidences = query_confidences.squeeze(2)
-#         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-        
-#         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
         
         # downsample query labels, for training
         if query_labels is not None:
@@ -282,7 +268,7 @@ class FewShotModel(nn.Module):
             query_labels = F.max_pool1d(query_labels, self.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
             query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
         
-        return weighted_average_logits, query_labels
+        return query_logits, query_labels
 
     def freeze_audio_encoder(self):
         self.audio_encoder.freeze()

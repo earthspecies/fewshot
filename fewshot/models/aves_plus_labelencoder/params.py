@@ -67,6 +67,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--inference-threshold', default = 0, type=float, help = "logit threshold to count as positive")
     parser.add_argument('--inference-n-chunks-to-keep', default=10, type=int, help="longer means support during inference will be longer")
     parser.add_argument('--inference-chunk-size-sec', default =16, type=float, help ="duration of audio chunks included in support")
+    parser.add_argument('--window-inference-support', action="store_true", help="window the support audio during inference")
     
     args = parser.parse_args(args)
     

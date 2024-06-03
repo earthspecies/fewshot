@@ -125,12 +125,9 @@ class FewshotDataset(Dataset):
         ## choose all randomness
         
         # Special scenario
-        
         total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
         scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
-            
-        # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
-                
+                            
         copy_support = 0 #rng.binomial(1, 0.01)
         
         # Background
@@ -475,8 +472,7 @@ class FewshotDataset(Dataset):
             query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
 
         if self.args.window_train_support:
-            audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
-        
+            audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)        
 
 
         return audio_support, support_labels, audio_query, query_labels
@@ -513,7 +509,7 @@ class InferenceDataset(Dataset):
         # support_audio (Tensor) : (support_dur_samples,)
         # support_labels (Tensor) : (support_dur_samples,)
         # query_audio (Tensor) : (query_dur_samples)
-        hop_ratio = 0.5
+        hop_ratio = 1
         self.args = args
         self.support_audio = support_audio
         self.support_labels = support_labels

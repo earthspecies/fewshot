@@ -7,7 +7,7 @@ import os
 from tqdm import tqdm
 from einops import rearrange
 
-from fewshot.data.data import get_inference_dataloader, load_audio
+from fewshot.data.data import get_inference_dataloader, load_audio, apply_windowing
 
 # Get cpu or gpu device for training.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -271,6 +271,7 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     if support_pad_len>0:
         support_labels = F.pad(support_labels, (0,support_pad_len))
 
+    #NOTE: ATST has its own MinMax scaler
     # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
     # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
     # query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
@@ -300,28 +301,9 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     query_confidences = torch.cat([cls_token, query_confidences], dim=1)
     query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
     query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-    query_logits = torch.sigmoid(query_logits)    
-    # sigmoid
-    
+    query_logits = torch.sigmoid(query_logits)
 
-#     query_logits = torch.stack(query_logits, 1)
-#     query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-
-#     query_confidences = model.confidence_transformer(query_confidences) # bt n_support 1
-#     query_confidences = query_confidences.squeeze(2)
-#     query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#     query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-
-#     weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#     weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
-
-    # downsample query labels, for training
-    if query_labels is not None:
-        query_labels = torch.unsqueeze(query_labels, 1) # (batch, 1, time)
-        query_labels = F.max_pool1d(query_labels, model.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
-        query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
-
-    return query_logits, query_labels
+    return query_logits
 
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
@@ -337,8 +319,6 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
         
         all_query_predictions = np.load(np_fp)
-
-    #
         
     else:
         
@@ -351,26 +331,10 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
         
         # pad etc
+        if args.window_inference_support:
+            support_audio, support_annotations = apply_windowing(support_audio, support_annotations, args)
         
-        ## loop audio at offset to provide a windowing effect
-        support_training_dur_samples = int(args.sr*args.support_dur_sec)
-        support_dur_samples = support_audio.size(0)
-        
-        assert model.audio_chunk_size_samples % 2 == 0
-        assert support_dur_samples >= model.audio_chunk_size_samples//2
-        
-        remainder = support_dur_samples % model.audio_chunk_size_samples
-        if remainder >= model.audio_chunk_size_samples//2:
-            to_cut = remainder-model.audio_chunk_size_samples//2
-        else:
-            to_cut = remainder+model.audio_chunk_size_samples//2
-                    
-        halfwindowed_audio_len = support_audio[to_cut:].size(0)
-        assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
-        support_audio = torch.cat((support_audio[to_cut:], support_audio))
-        support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
-        
-        # Pad out so we don't have empty sounds
+        # Pad support so we don't have empty sounds
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
         if support_pad>0:
             support_audio = torch.cat((support_audio, support_audio[:support_pad]))
@@ -380,7 +344,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         query_dur_samples = int(args.query_dur_sec * args.sr)
         query_pad = (query_dur_samples - (query_audio.size(0) % query_dur_samples)) % query_dur_samples
         if query_pad>0:
-            query_audio = F.pad(query_audio, (0,query_pad))
+            query_audio = F.pad(query_audio, (0,query_pad)) # TODO: add attention mask
         
        
         assert len(support_annotations) == len(support_audio)
@@ -388,10 +352,6 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)
         all_query_predictions = []
         
-        ##
-        support_dataloader = get_inference_dataloader(support_audio, support_annotations, support_audio, args)
-        all_support_predictions = []
-        ##
         
         if args.inference_temperature <0:
             temperature= (args.support_dur_sec//args.audio_chunk_size_sec)/len(inference_dataloader) # adjust from training to inference by decreasing temp for long clips
@@ -406,55 +366,12 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
                 if cached_support_encoded is None:
                     cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device))
                 
-                query_predictions, _ = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), temperature=temperature) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
+                query_predictions = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), temperature=temperature) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
                 all_query_predictions.append(query_predictions)
         
         
-        # all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
-        # all_query_predictions = all_query_predictions.reshape(-1)
-        
-        # assert all_query_predictions.size(1) % 4 == 0
-        # quarter_window = all_query_predictions.size(1)//4
-        
-        # all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
-        # all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
-
-        # Concatenate all query predictions along the batch dimension
-        all_query_predictions = torch.cat(all_query_predictions, dim=0)
-        chunk_size = all_query_predictions.size(1)
-
-        # Ensure chunk_size is valid for the logic
-        assert chunk_size >= 4, "Chunk size must be at least 4 for quarter-windowing to work."
-
-        # Calculate dynamic quarter sizes
-        quarter_size = chunk_size // 4
-        remaining = chunk_size % 4
-
-        # Adjust sizes for the first, middle, and last parts
-        first_part_size = quarter_size + (remaining // 2)
-        last_part_size = quarter_size + (remaining - (remaining // 2))
-        middle_part_size = chunk_size - first_part_size - last_part_size
-
-        # Ensure calculated sizes are valid
-        assert first_part_size + middle_part_size + last_part_size == chunk_size, "Sizes do not sum up correctly."
-
-        # Perform the windowing
-        all_query_predictions_windowed = all_query_predictions[:, first_part_size:-last_part_size]
-        # Ensure windowed predictions are valid
-        assert all_query_predictions_windowed.size(1) == middle_part_size, "Windowed prediction size is incorrect."
-
-        # Reshape the windowed predictions
-        all_query_predictions_windowed = torch.reshape(all_query_predictions_windowed, (-1,))
-
-        # Concatenate first, middle, and last parts
-        all_query_predictions = torch.cat((
-            all_query_predictions[0, :first_part_size],
-            all_query_predictions_windowed,
-            all_query_predictions[-1, -last_part_size:]
-        )).cpu().numpy()
-
-        # Ensure final predictions are in the range [0, 1]
-        assert np.all((all_query_predictions >= 0) & (all_query_predictions <= 1)), "Predictions are out of range [0, 1]."
+        all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
+        all_query_predictions = all_query_predictions.reshape(-1)
 
         # Remove query padding if necessary
         if query_pad // args.scale_factor > 0:
@@ -463,42 +380,6 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         # Ensure final shape and values are correct
         print(f"Final shape of all_query_predictions: {all_query_predictions.shape}")
         assert all_query_predictions.shape[0] > 0, "Final predictions array is empty."
-
-#         ##
-#         with torch.no_grad():
-#             for i, data_item in tqdm(enumerate(support_dataloader)):
-#                 sa, sl, sqa = data_item
-#                 sa = sa.to(device)
-                
-#                 support_predictions, support_labels_downsampled = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), sqa.to(device), temperature=temperature, query_labels=sl.to(device)) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
-#                 all_support_predictions.append(support_predictions)
-        
-#         all_support_predictions = torch.cat(all_support_predictions, dim=0)
-#         assert all_support_predictions.size(1) % 4 == 0
-#         quarter_window = all_support_predictions.size(1)//4
-        
-#         all_support_predictions_windowed = torch.reshape(all_support_predictions[:, quarter_window:-quarter_window], (-1,))
-#         all_support_predictions = torch.cat((all_support_predictions[0,:quarter_window], all_support_predictions_windowed, all_support_predictions[-1,-quarter_window:])).cpu().numpy()   
-        
-#         support_labels_downsampled = support_labels_downsampled[0,:].cpu().numpy()
-            
-#         fn = os.path.basename(audio_fp)
-#         np.save(os.path.join(args.experiment_dir, fn[:-4]+"_support_predictions.npy"), all_support_predictions)
-                
-#         support_pos = all_support_predictions[support_labels_downsampled ==2]
-#         support_neg = all_support_predictions[support_labels_downsampled ==0]
-        
-#         avg_pos = np.median(support_pos)
-#         avg_neg = np.median(support_neg)
-#         print(avg_pos)
-        
-# #         threshold_learned = (avg_pos+avg_neg)/2
-        
-#         threshold_learned = avg_pos - 0.1*(avg_pos-avg_neg)
-#         # threshold_learned=0
-#         print(threshold_learned)
-        
-#         ##
         
         # save np array of predictions
         fn = os.path.basename(audio_fp)
