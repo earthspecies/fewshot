@@ -10,6 +10,10 @@ from torchaudio.models import wav2vec2_model
 import json
 from x_transformers import ContinuousTransformerWrapper, Encoder
 
+from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
+from fewshot.models.aves_plus_labelencoder.frame_atst import get_timestamp_embedding, load_model
+
+ADD_LABEL_EMBEDDING = True
 
 class AvesEmbedding(nn.Module):
     def __init__(self, args):
@@ -58,7 +62,7 @@ class LabelEncoder(nn.Module):
         assert args.support_dur_sec * args.sr / args.scale_factor == self.support_seq_len
         assert args.query_dur_sec * args.sr / args.scale_factor == self.query_seq_len
         self.transformer = ContinuousTransformerWrapper(
-            dim_in = args.embedding_dim + 4,
+            dim_in = args.embedding_dim if ADD_LABEL_EMBEDDING else args.embedding_dim+4,
             dim_out = 512,
             max_seq_len = int(self.support_seq_len + self.query_seq_len),
             attn_layers = Encoder(
@@ -66,12 +70,16 @@ class LabelEncoder(nn.Module):
                 depth = args.label_encoder_depth,
                 heads = args.label_encoder_heads,
                 attn_flash=True,
-                rotary_pos_emb=True
+                rotary_pos_emb = True,
+                ff_swish = True,
+                ff_glu = True,
             )
         )
-        self.label_embedding=torch.nn.Conv1d(4, 4, 1)
+        if ADD_LABEL_EMBEDDING:
+            self.label_embedding = torch.nn.Linear(4, args.embedding_dim)
+        else:
+            self.label_embedding=torch.nn.Conv1d(4, 4, 1)
         self.logits_head = nn.Conv1d(512, 1, 1)
-        # self.confidences_head = nn.Conv1d(512, 64, 1)
         self.args = args
 
     def forward(self, encoded_support_audio, support_labels_downsampled, encoded_query_audio):
@@ -84,11 +92,21 @@ class LabelEncoder(nn.Module):
         query_masked_labels = F.one_hot(query_masked_labels, num_classes=4).float()
         query_masked_labels = rearrange(query_masked_labels, 'b t c -> b c t')
         
-        support_labels_downsampled=self.label_embedding(support_labels_downsampled)
-        query_masked_labels=self.label_embedding(query_masked_labels)
+
+        if ADD_LABEL_EMBEDDING:
+            support_labels_downsampled=self.label_embedding(support_labels_downsampled.reshape(-1,4)).reshape(encoded_support_audio.size(0), self.args.embedding_dim, -1)
+            query_masked_labels=self.label_embedding(query_masked_labels.reshape(-1,4)).reshape(encoded_query_audio.size(0), self.args.embedding_dim, -1)
+        else:
+            support_labels_downsampled = self.label_embedding(support_labels_downsampled)
+            query_masked_labels = self.label_embedding(query_masked_labels)
         
-        support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
-        query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
+        
+        if ADD_LABEL_EMBEDDING:
+            support_cat = encoded_support_audio + support_labels_downsampled
+            query_cat = encoded_query_audio + query_masked_labels
+        else:
+            support_cat = torch.cat((encoded_support_audio, support_labels_downsampled), dim=1) # (batch, embedding_dim+4, time/scale_factor)
+            query_cat = torch.cat((encoded_query_audio, query_masked_labels), dim=1) # (batch, embedding_dim+4, time/scale_factor)
         
         transformer_input = torch.cat((support_cat, query_cat), dim = 2)
         transformer_input = rearrange(transformer_input, 'b c t -> b t c')
@@ -141,10 +159,32 @@ class AvesEncoder(nn.Module):
     def unfreeze(self):
         self.aves_embedding.unfreeze()
 
+class ATSTEncoder(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.atst = load_model(args.atst_model_path, device=device)
+        self.args = args
+    
+    def forward(self, x):
+        encoding = get_timestamp_embedding(x, self.atst)
+        return encoding
+    
+    def freeze(self):
+        self.atst.freeze()
+
+    def unfreeze(self):
+        self.atst.unfreeze()
+
 class FewShotModel(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.audio_encoder = AvesEncoder(args)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if args.atst_frame:
+            self.audio_encoder = ATSTEncoder(args)
+        else:
+            self.audio_encoder = AvesEncoder(args)
+
         self.label_encoder = LabelEncoder(args)
         self.args = args
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
@@ -157,10 +197,13 @@ class FewShotModel(nn.Module):
                 dim = 128,
                 depth = 2,
                 heads = 2,
+                ff_swish = True,
+                ff_glu = True,
+                attn_flash=True,
             )
         )
         
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
          
         cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
         self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
@@ -176,17 +219,18 @@ class FewShotModel(nn.Module):
         Output
             logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
         """
-        
         # pad and normalize audio
-        support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
+        # support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
+        support_pad_len = self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)
         if support_pad_len>0:
-            support_audio = F.pad(support_audio, (0,support_pad_len))
             support_labels = F.pad(support_labels, (0,support_pad_len))
+
         
-        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
-        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+        #NOTE: ATST has its own MinMax scaler
+        # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        # support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+        # query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
         
         # encode audio and labels
         query_logits = []
@@ -203,7 +247,7 @@ class FewShotModel(nn.Module):
             
             support_labels_sub = support_labels[:, start_sample:start_sample+self.audio_chunk_size_samples]
             support_labels_sub_downsampled = F.max_pool1d(support_labels_sub.unsqueeze(1), self.args.scale_factor, padding=0).squeeze(1) # (batch, time/scale_factor). 0=NEG 1=UNK 2=POS
-            
+
             l, c = self.label_encoder(support_audio_sub_encoded, support_labels_sub_downsampled, query_audio_encoded) # each output: (batch, query_time/scale_factor). 
             
             c_shape = c.size() # b t c
@@ -217,20 +261,6 @@ class FewShotModel(nn.Module):
         query_confidences = torch.cat([cls_token, query_confidences], dim=1)
         query_logits = self.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
         query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-        weighted_average_logits=query_logits
-        
-        
-        
-#         query_logits = torch.stack(query_logits, 1)
-#         query_confidences = torch.stack(query_confidences, 1) # bt n_support c
-        
-#         query_confidences = self.confidence_transformer(query_confidences) # bt n_support 1
-#         query_confidences = query_confidences.squeeze(2)
-#         query_confidences = torch.reshape(query_confidences, (c_shape[0], c_shape[1], -1)) # b t n_support
-#         query_confidences = rearrange(query_confidences, 'b t c -> b c t')
-        
-#         weights = torch.softmax(query_confidences*(1/temperature), dim=1)
-#         weighted_average_logits = (query_logits*weights).sum(dim=1) # (batch, query_time/scale_factor)
         
         # downsample query labels, for training
         if query_labels is not None:
@@ -238,7 +268,7 @@ class FewShotModel(nn.Module):
             query_labels = F.max_pool1d(query_labels, self.args.scale_factor, padding=0) # (batch, 1 , time/scale_factor). 0=NEG 1=UNK 2=POS
             query_labels = torch.squeeze(query_labels, 1) # (batch, time/scale_factor)
         
-        return weighted_average_logits, query_labels
+        return query_logits, query_labels
 
     def freeze_audio_encoder(self):
         self.audio_encoder.freeze()
