@@ -66,7 +66,7 @@ def process_dcase(audio, annotations, args):
         to_add = chunks_to_maybe_keep.pop()
         chunks_to_keep.append(to_add)
         
-    chunks_to_keep = sorted(chunks_to_keep)[:max_n_chunks_to_keep]
+    chunks_to_keep = sorted(chunks_to_keep)
     support_audio_new = []
     support_annot_new = []
     for chunk_start in chunks_to_keep:
