@@ -376,10 +376,6 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         # Remove query padding if necessary
         if query_pad // args.scale_factor > 0:
             all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)]  # omit predictions for padded region at end of query
-
-        # Ensure final shape and values are correct
-        print(f"Final shape of all_query_predictions: {all_query_predictions.shape}")
-        assert all_query_predictions.shape[0] > 0, "Final predictions array is empty."
         
         # save np array of predictions
         fn = os.path.basename(audio_fp)

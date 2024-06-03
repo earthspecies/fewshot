@@ -31,6 +31,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--atst-model-path', type=str, default="/home/jupyter/fewshot/weights/atstframe_base.ckpt")
     
     # Training
+    parser.add_argument('--train', action="store_true")
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--lr', type=float, default=.0001) 
