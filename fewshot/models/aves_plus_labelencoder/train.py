@@ -59,9 +59,15 @@ def main(args):
             mp.spawn(train, args=(dataset, world_size, initialize_model, args), nprocs=world_size, join=True)
         else:
             train(0, dataset, world_size, initialize_model, args, single_gpu=True)
+        
         print("Training Complete!")
 
-    model = initialize_model(args)
+        model = initialize_model(args)
+        final_model_fp = os.path.join(args.experiment_dir, "final_model.pt")
+        cp = torch.load(final_model_fp)
+        model.load_state_dict(cp["model_state_dict"])
+    else:
+        model = initialize_model(args)
     
     ## Evaluation
     evaluation_manifest = pd.read_csv(args.dcase_evaluation_manifest_fp)
@@ -133,6 +139,67 @@ def initialize_model(args):
         cp = torch.load(args.previous_checkpoint_fp)
         model.load_state_dict(cp["model_state_dict"])
     return model
+
+def get_optimizer_layerwise(model, args):
+    # Separate parameters into groups for LLRD
+    regularized = []
+    not_regularized = []
+    tfm_params = [[], [], [], [], [], [], [], [], [], [], [], [], [], []]  # Adjust this based on the number of transformer layers
+
+    for name, param in model.named_parameters():
+        if name.endswith(".bias") or len(param.shape) == 1:
+            not_regularized.append(param)
+        else:
+            regularized.append(param)
+        
+        # Check for atst layer parameters and group them
+        if "atst_frame" in name:
+            if "blocks.0." in name:
+                tfm_params[1].append(param)
+            elif "blocks.1." in name:
+                tfm_params[2].append(param)
+            elif "blocks.2." in name:
+                tfm_params[3].append(param)
+            elif "blocks.3." in name:
+                tfm_params[4].append(param)
+            elif "blocks.4." in name:
+                tfm_params[5].append(param)
+            elif "blocks.5." in name:
+                tfm_params[6].append(param)
+            elif "blocks.6." in name:
+                tfm_params[7].append(param)
+            elif "blocks.7." in name:
+                tfm_params[8].append(param)
+            elif "blocks.8" in name:
+                tfm_params[9].append(param)
+            elif "blocks.9." in name:
+                tfm_params[10].append(param)
+            elif "blocks.10." in name:
+                tfm_params[11].append(param)
+            elif "blocks.11." in name:
+                tfm_params[12].append(param)
+            elif ".norm_frame." in name:
+                tfm_params[13].append(param)
+            else:
+                tfm_params[0].append(param)
+    
+    # Layer-wise learning rate scaling
+    init_lr = args.lr
+    lr_scale = args.tfm_lr_scale  # Ensure this is defined in args
+    trainable_layers = len(tfm_params)
+    scale_lrs = [init_lr * (lr_scale ** i) for i in range(trainable_layers)]
+
+    tfm_param_groups = [{"params": tfm_params[i], "lr": scale_lrs[i]} for i in range(trainable_layers) if tfm_params[i]]
+
+    # Regular optimizer param groups
+    param_groups = [
+        {'params': regularized, "weight_decay": 0.01},
+        {'params': not_regularized, 'weight_decay': 0.}
+    ] # + tfm_param_groups
+
+    optimizer = bnb.optim.AdamW8bit(param_groups, lr=args.lr, amsgrad=True)
+    return optimizer
+
 
 def get_optimizer(model, args):
     regularized = []
