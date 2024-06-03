@@ -21,7 +21,6 @@ def load_audio(fp, target_sr):
     audio, file_sr = torchaudio.load(fp)
     
     if file_sr != target_sr:
-        print("resampling", fp, file_sr, target_sr)
         audio = torchaudio.functional.resample(audio, file_sr, target_sr)
     
     # correct DC offset
@@ -47,12 +46,6 @@ def apply_windowing(audio, labels, chunk_size_samples):
 
     audio = torch.cat((audio[to_cut:], audio))
     labels = torch.cat((labels[to_cut:], labels))
-
-    pad = (chunk_size_samples - (audio.size(0) % chunk_size_samples)) % chunk_size_samples
-
-    if pad > 0:
-        audio = torch.cat((audio, audio[:pad]))
-        labels = torch.cat((labels, labels[:pad]))
 
     return audio, labels
 
@@ -92,10 +85,10 @@ class FewshotDataset(Dataset):
         self.nonbio_clusters_with_enough_examples = pd.Series(sorted(self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts()[self.nonbio_pseudovox_info["fp_plus_prediction"].value_counts() >= self.args.nonbio_min_cluster_size].index))
         
         # Init augmentations
-        self.shift_up = torchaudio.transforms.PitchShift(16000, 12, hop_length=64)
-        self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, hop_length=64)
-        self.shift_down = torchaudio.transforms.PitchShift(16000, -12, hop_length=64)
-        self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, hop_length=64)
+        self.shift_up = torchaudio.transforms.PitchShift(self.args.sr, 12, hop_length=64)
+        self.shift_up2 = torchaudio.transforms.PitchShift(self.args.sr, 24, hop_length=64)
+        self.shift_down = torchaudio.transforms.PitchShift(self.args.sr, -12, hop_length=64)
+        self.shift_down2 = torchaudio.transforms.PitchShift(self.args.sr, -24, hop_length=64)
 
         self.scenarios = self.args.scenarios.split(',')
         
@@ -132,8 +125,8 @@ class FewshotDataset(Dataset):
         
         # Special scenario
         
-        
-        scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] for s in self.scenarios])
+        total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
+        scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
             
         # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
                 
@@ -306,7 +299,6 @@ class FewshotDataset(Dataset):
             audio_query =torch.tile(audio_query, (query_dur_samples//audio_query.size(0)+2,))
         
         audio_support_start_sample = rng.integers(0, audio_support.size(0) - support_dur_samples)
-        #TODO: query background non-overlapping where possible
         audio_query_start_sample = rng.integers(0, audio_query.size(0) - query_dur_samples)
         
         audio_support = audio_support[audio_support_start_sample:audio_support_start_sample+support_dur_samples]
@@ -483,9 +475,6 @@ class FewshotDataset(Dataset):
 
         if self.args.window_train_support:
             audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
-        
-        
-        
         
 
 

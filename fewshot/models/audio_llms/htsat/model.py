@@ -12,10 +12,11 @@ from itertools import repeat
 import collections.abc
 import math
 import warnings
+import torchaudio
 
 from torch.nn.init import _calculate_fan_in_and_fan_out
 import torch.utils.checkpoint as checkpoint
-from dataclasses import dataclass
+from dataclasses import dataclass   
 import random
 import os
 from einops import rearrange
@@ -801,15 +802,11 @@ class HTSAT_Swin_Transformer(nn.Module):
 
 
  
-        fpx = interpolate(torch.sigmoid(x).permute(0,2,1).contiguous(), 8 * self.patch_stride[1]) 
+        fpx = interpolate(torch.sigmoid(x).permute(0,2,1).contiguous(), 8 * self.patch_stride[1])
+
             
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-
-        print("fine grained latent output", fine_grained_latent_output.shape, fine_grained_latent_output[0])
-        print("frame wise output", fpx.shape, fpx[0])
-        print("clip wise output", x.shape)
-        print("latent output", latent_output.shape)
 
         output_dict = {
             'framewise_output': fpx, # already sigmoided
@@ -817,7 +814,9 @@ class HTSAT_Swin_Transformer(nn.Module):
             'fine_grained_embedding': rearrange(fine_grained_latent_output, "b t c -> b c t" ),
             'embedding': latent_output
         }
-
+        # remove the 12 outer frames of padding from each side of fine_grained_embedding
+        output_dict["fine_grained_embedding"] = output_dict["fine_grained_embedding"][:,:,12:-12]
+        output_dict["framewise_output"] = output_dict["framewise_output"][:,:,12:-12]
         return output_dict
 
     def crop_wav(self, x, crop_size, spe_pos = None):
@@ -833,7 +832,8 @@ class HTSAT_Swin_Transformer(nn.Module):
 
     # Reshape the wavform to a img size, if you want to use the pretrained swin transformer model
     def reshape_wav2img(self, x):
-        B, C, T, F = x.shape
+        B, C, T, F = x.shape # T should be...?
+        
         target_T = int(self.spec_size * self.freq_ratio)
         target_F = self.spec_size // self.freq_ratio
         assert T <= target_T and F <= target_F, "the wav size should less than or equal to the swin input size"
@@ -879,6 +879,43 @@ class HTSAT_Swin_Transformer(nn.Module):
         output_dict = self.forward_features(x)
 
         return output_dict["fine_grained_embedding"]
+
+def get_spectrogram(audio_cfg, audio_data):
+    mel_tf = torchaudio.transforms.MelSpectrogram(
+        sample_rate=audio_cfg['sample_rate'],
+        n_fft=audio_cfg['window_size'],
+        win_length=audio_cfg['window_size'],
+        hop_length=audio_cfg['hop_size'],
+        center=True,
+        pad_mode="reflect",
+        power=2.0,
+        norm=None,
+        onesided=True,
+        n_mels=audio_cfg['mel_bins'],
+        f_min=audio_cfg['fmin'],
+        f_max=audio_cfg['fmax']
+    ).to(audio_data.device)
+    
+    mel = mel_tf(audio_data)
+    # Align to librosa:
+    # librosa_melspec = librosa.feature.melspectrogram(
+    #     waveform,
+    #     sr=audio_cfg['sample_rate'],
+    #     n_fft=audio_cfg['window_size'],
+    #     hop_length=audio_cfg['hop_size'],
+    #     win_length=audio_cfg['window_size'],
+    #     center=True,
+    #     pad_mode="reflect",
+    #     power=2.0,
+    #     n_mels=audio_cfg['mel_bins'],
+    #     norm=None,
+    #     htk=True,
+    #     f_min=audio_cfg['fmin'],
+    #     f_max=audio_cfg['fmax']
+    # )
+    # we use log mel spectrogram as input
+    mel = torchaudio.transforms.AmplitudeToDB(top_db=None)(mel)
+    return mel.T  # (T, n_mels)
 
 def create_htsat_model(audio_cfg, enable_fusion=False, fusion_type='None', lock = False):
     try:
@@ -938,15 +975,26 @@ def create_htsat_model(audio_cfg, enable_fusion=False, fusion_type='None', lock 
         
 
 def load_pretrained_htsat_model(model, pretrained_audio, device):
-    if 'HTSAT_AudioSet_Saved' in pretrained_audio:  # official checkpoint
+    if "BioLingual" in pretrained_audio:
         audio_ckpt = torch.load(pretrained_audio, map_location='cpu')
         audio_ckpt = audio_ckpt['state_dict']
+        audio_ckpt = {k.replace('module.', ''): v for k, v in audio_ckpt.items()}
+        audio_ckpt = {k.replace('audio_branch.', ''): v for k, v in audio_ckpt.items()}
+        print(audio_ckpt.keys())
+        #filter text branch
+        audio_ckpt = {k: v for k, v in audio_ckpt.items() if 'text_branch.' not in k}
+        model.load_state_dict(audio_ckpt, strict=False)
+    if 'HTSAT' in pretrained_audio:  # official checkpoint
+        print("loading official checkpoint")
+        audio_ckpt = torch.load(pretrained_audio, map_location='cpu')
+        audio_ckpt = audio_ckpt['state_dict']
+        audio_ckpt = {k.replace('audio_branch.', ''): v for k, v in audio_ckpt.items()}
         keys = list(audio_ckpt.keys())
         for key in keys:
             if key.startswith('sed_model') and ('spectrogram_extractor' not in key
                                                 and 'logmel_extractor' not in key):
                 v = audio_ckpt.pop(key)
-                audio_ckpt['audio_branch.' + key[10:]] = v
+                audio_ckpt[key[10:]] = v
     elif os.path.basename(pretrained_audio).startswith('HTSAT'):  # checkpoint trained via HTSAT codebase
         audio_ckpt = torch.load(pretrained_audio, map_location='cpu')
         audio_ckpt = audio_ckpt['state_dict']
@@ -970,8 +1018,8 @@ def load_pretrained_htsat_model(model, pretrained_audio, device):
                 print(f"Removing {key} from checkpoint")
                 del audio_ckpt[key]
         model.load_state_dict(audio_ckpt, strict=False)
-        print(f"Loading pretrained {pretrained_audio} weights")
-        param_names = [n for n, p in model.named_parameters()]
-        for n in param_names:
-            print(n, "\t", "Loaded" if n in audio_ckpt else "Unloaded")
+    print(f"Loading pretrained {pretrained_audio} weights")
+    param_names = [n for n, p in model.named_parameters()]
+    for n in param_names:
+        print(n, "\t", "Loaded" if n in audio_ckpt else "Unloaded")
         

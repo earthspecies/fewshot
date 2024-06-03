@@ -6,8 +6,11 @@ import pandas as pd
 import os
 from tqdm import tqdm
 from einops import rearrange
+from transformers import AutoProcessor, ClapAudioModelWithProjection
 
 from fewshot.data.data import get_inference_dataloader, load_audio
+
+
 
 # Get cpu or gpu device for training.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -174,6 +177,14 @@ def calculate_average_event_duration(support_annotations, sr):
     
     return average_event_duration
 
+def embed_audio(processor, model, audio):
+    """
+    Embed a single audio query.
+    """
+    # Embed the audio query using the same transformer used for the audios
+    inputs = processor(audios=[audio], return_tensors="pt", sampling_rate=48000, padding=True).to("cuda")
+    model_outputs = model(**inputs)
+    return model_outputs.audio_embeds[0].detach().cpu().numpy()
     
 def get_threshold(support_annotations, all_query_predictions, args):
     """
@@ -361,7 +372,9 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         annotations = pd.read_csv(annotations_fp)
 
         support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
-        
+        # biolingual_model = ClapAudioModelWithProjection.from_pretrained("davidrrobinson/BioLingual")
+        # processor = AutoProcessor.from_pretrained("davidrrobinson/BioLingual")
+        # positive_prototype_embeddings, negative_prototype_embeddings = get_prototype_embeddings(model=biolingual_model, processor=processor, support_audio, support_annotations, args)
         # pad etc
         
         ## loop audio at offset to provide a windowing effect
@@ -423,11 +436,13 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         
         
         all_query_predictions = torch.cat(all_query_predictions, dim=0)
-        assert all_query_predictions.size(1) % 4 == 0
-        quarter_window = all_query_predictions.size(1)//4
+        all_query_predictions = all_query_predictions.reshape(-1)
+        all_query_predictions = all_query_predictions.cpu().numpy()
+        # assert all_query_predictions.size(1) % 4 == 0
+        # quarter_window = all_query_predictions.size(1)//4
         
-        all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
-        all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
+        # all_query_predictions_windowed = torch.reshape(all_query_predictions[:, quarter_window:-quarter_window], (-1,))
+        # all_query_predictions = torch.cat((all_query_predictions[0,:quarter_window], all_query_predictions_windowed, all_query_predictions[-1,-quarter_window:])).cpu().numpy()
         
         #remove query padding        
         if query_pad // args.scale_factor > 0:
