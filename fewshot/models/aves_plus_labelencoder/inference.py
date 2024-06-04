@@ -333,7 +333,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         
         # pad etc
         if args.window_inference_support:
-            support_audio, support_annotations = apply_windowing(support_audio, support_annotations, args)
+            support_audio, support_annotations = apply_windowing(support_audio, support_annotations, model.audio_chunk_size_samples)
         
         # Pad support so we don't have empty sounds
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
