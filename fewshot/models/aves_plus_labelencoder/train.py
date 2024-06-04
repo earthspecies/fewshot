@@ -142,9 +142,9 @@ def train(model, args):
   
     loss_fn = get_loss_fn(args)
   
-    # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad = True)
     # optimizer = bnb.optim.Adam8bit(model.parameters(), lr=args.lr, amsgrad = True)
-    optimizer = get_optimizer(model, args)
+    # optimizer = get_optimizer(model, args)
     
     if args.unfreeze_encoder_step>0:
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.unfreeze_encoder_step)
@@ -156,7 +156,7 @@ def train(model, args):
         cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.n_train_steps, eta_min=0, last_epoch=- 1)
         scheduler=torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
   
-    scaler = torch.cuda.amp.GradScaler()
+    # scaler = torch.cuda.amp.GradScaler()
     
     history={'loss' : [], 'learning_rate' : [], 'accuracy' : [], 'precision':[], 'recall':[]}
     
@@ -170,15 +170,15 @@ def train(model, args):
         
         support_audio, support_labels, query_audio, query_labels = data_item
         
-        with torch.cuda.amp.autocast(dtype=torch.float16):
-            logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
-            
-            loss_mask_samples = int(logits.size(1)*.1)
-            if loss_mask_samples>0:
-                logits = logits[:,loss_mask_samples:-loss_mask_samples]
-                query_labels = query_labels[:,loss_mask_samples:-loss_mask_samples]
-            
-            loss = loss_fn(logits, query_labels)
+        # with torch.cuda.amp.autocast(dtype=torch.float16):
+        logits, query_labels = model(support_audio.to(device = device, dtype = torch.float), support_labels.to(device = device, dtype = torch.float), query_audio.to(device = device, dtype = torch.float), query_labels=query_labels.to(device = device, dtype = torch.float))
+
+        loss_mask_samples = int(logits.size(1)*.1)
+        if loss_mask_samples>0:
+            logits = logits[:,loss_mask_samples:-loss_mask_samples]
+            query_labels = query_labels[:,loss_mask_samples:-loss_mask_samples]
+
+        loss = loss_fn(logits, query_labels)
             
         acc, prec, rec = compute_metrics(logits, query_labels)
         
@@ -205,13 +205,15 @@ def train(model, args):
 
         # Backpropagation
         optimizer.zero_grad()
-        # loss.backward()
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
+        loss.backward()
+        # scaler.scale(loss).backward()
+        # scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-        scaler.step(optimizer)
+        # scaler.step(optimizer)
+        
+        optimizer.step()
         scheduler.step()
-        scaler.update()
+        # scaler.update()
         
         if (t % args.checkpoint_frequency == 0) or (t==len(dataloader)-1):
             print(f"Step {t}: Loss={np.mean(history['loss'][-args.checkpoint_frequency:])}, Accuracy={np.mean(history['accuracy'][-args.checkpoint_frequency:])}, Precision={np.mean(history['precision'][-args.checkpoint_frequency:])}, Recall={np.mean(history['recall'][-args.checkpoint_frequency:])}")
