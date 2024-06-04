@@ -219,9 +219,15 @@ class FewShotModel(nn.Module):
         """
         # pad and normalize audio
         # support_pad_len = (self.audio_chunk_size_samples - support_audio.size(1) % self.audio_chunk_size_samples) % self.audio_chunk_size_samples
-        support_pad_len = self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)
-        if support_pad_len>0:
-            support_labels = F.pad(support_labels, (0,support_pad_len))
+        # support_pad_len = self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)
+        # if support_pad_len>0:
+        #     support_labels = F.pad(support_labels, (0,support_pad_len))
+            
+        # Pad support so we don't have empty sounds
+        support_pad = (self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)) % self.audio_chunk_size_samples
+        if support_pad>0:
+            support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
+            support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
         
         #NOTE: ATST has its own MinMax scaler
         if not self.args.atst_frame:

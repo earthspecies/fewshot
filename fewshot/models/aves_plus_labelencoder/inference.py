@@ -233,9 +233,9 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
 def cache_support_encoded(model, support_audio, args):
     
     # pad and normalize audio
-    support_pad_len = (model.audio_chunk_size_samples - support_audio.size(1) % model.audio_chunk_size_samples) % model.audio_chunk_size_samples
-    if support_pad_len>0:
-        support_audio = F.pad(support_audio, (0,support_pad_len))
+    support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+    if support_pad>0:
+        support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
     
     if not args.atst_frame:
         normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
@@ -266,10 +266,10 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
         logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
     """
 
-    # pad and normalize audio
-    support_pad_len = (model.audio_chunk_size_samples - support_audio.size(1) % model.audio_chunk_size_samples) % model.audio_chunk_size_samples
-    if support_pad_len>0:
-        support_labels = F.pad(support_labels, (0,support_pad_len))
+    # Pad support so we don't have empty sounds
+    support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+    if support_pad>0:
+        support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
 
     #NOTE: ATST has its own MinMax scaler
     if not args.atst_frame:

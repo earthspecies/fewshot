@@ -98,7 +98,6 @@ class FewshotDataset(Dataset):
         self.resamplers[(args.sr, args.sr//2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr//2)
         self.resamplers[(args.sr, args.sr*2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr*2)
 
-        
         self.audio_chunk_size_samples = int(self.args.audio_chunk_size_sec * self.args.sr)
         
     def load_audio(self, fp, target_sr):
