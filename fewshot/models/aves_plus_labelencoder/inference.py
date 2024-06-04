@@ -190,7 +190,6 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
     avg_event_duration_frames = avg_event_duration * pred_sr
     # threshold = calculate_adaptive_threshold(avg_event_duration)
     
-    
     # median_filter_window_size = max(3, int(avg_event_duration_frames // 4))  # Quarter of the average event duration, minimum of 3
     # print(f"avg event frames {avg_event_duration_frames} median filter window size: {median_filter_window_size}")
     # all_query_predictions = np.apply_along_axis(lambda x: median_filter(x, median_filter_window_size), 0, all_query_predictions)
@@ -231,19 +230,19 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
     
     return d
 
-def cache_support_encoded(model, support_audio):
+def cache_support_encoded(model, support_audio, args):
     
     # pad and normalize audio
     support_pad_len = (model.audio_chunk_size_samples - support_audio.size(1) % model.audio_chunk_size_samples) % model.audio_chunk_size_samples
     if support_pad_len>0:
         support_audio = F.pad(support_audio, (0,support_pad_len))
-        
-    # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-    # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-    # support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+    
+    if not args.atst_frame:
+        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
     
     support_len_samples = support_audio.size(1)
-    
     support_audio_subs_encoded = []
     start_samples = []
     
@@ -256,7 +255,7 @@ def cache_support_encoded(model, support_audio):
     return support_audio_subs_encoded, start_samples
 
 
-def forward_cached(model, support_audio, support_audio_encoded, start_samples, support_labels, query_audio, query_labels=None, temperature=1):
+def forward_cached(model, support_audio, support_audio_encoded, start_samples, support_labels, query_audio, args, query_labels=None):
     """
     Input
         support_audio (Tensor): (batch, time) (at audio_sr)
@@ -273,9 +272,10 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
         support_labels = F.pad(support_labels, (0,support_pad_len))
 
     #NOTE: ATST has its own MinMax scaler
-    # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-    # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-    # query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+    if not args.atst_frame:
+        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
 
     # encode audio and labels
     query_logits = []
@@ -302,9 +302,9 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     query_confidences = torch.cat([cls_token, query_confidences], dim=1)
     query_logits = model.confidence_transformer(query_confidences)[:,0,:].squeeze(-1).squeeze(-1) #bt 1 1 -> bt
     query_logits = torch.reshape(query_logits, (c_shape[0], c_shape[1])) # b t
-    query_logits = torch.sigmoid(query_logits)
+    query_probs = torch.sigmoid(query_logits)
 
-    return query_logits
+    return query_probs
 
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
@@ -347,17 +347,13 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         if query_pad>0:
             query_audio = F.pad(query_audio, (0,query_pad)) # TODO: add attention mask
         
-       
+        if args.window_inference_query:
+            assert model.audio_chunk_size_samples % 2 == 0
         assert len(support_annotations) == len(support_audio)
         
         inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)
         all_query_predictions = []
         
-        
-        if args.inference_temperature <0:
-            temperature= (args.support_dur_sec//args.audio_chunk_size_sec)/len(inference_dataloader) # adjust from training to inference by decreasing temp for long clips
-        else:
-            temperature=args.inference_temperature
         with torch.no_grad():
             cached_support_encoded = None
             for i, data_item in tqdm(enumerate(inference_dataloader)):
@@ -365,14 +361,23 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
                 sa = sa.to(device)
                 
                 if cached_support_encoded is None:
-                    cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device))
+                    cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device), args)
                 
-                query_predictions = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), temperature=temperature) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
+                query_predictions = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), args)
                 all_query_predictions.append(query_predictions)
         
-        
         all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
-        all_query_predictions = all_query_predictions.reshape(-1)
+        
+        if args.window_inference_query:
+            left_quarterwindow = all_query_predictions.shape[1] // 4
+            right_quarterwindow = (all_query_predictions.shape[1] // 2) - left_quarterwindow
+            middle_bits = all_query_predictions[:,left_quarterwindow:-right_quarterwindow].reshape(-1)
+            far_left_bit = all_query_predictions[0,:left_quarterwindow]
+            far_right_bit = all_query_predictions[-1,-right_quarterwindow:]
+            all_query_predictions = np.concatenate((far_left_bit, middle_bits, far_right_bit))
+        
+        else:
+            all_query_predictions = all_query_predictions.reshape(-1)
 
         # Remove query padding if necessary
         if query_pad // args.scale_factor > 0:

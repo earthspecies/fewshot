@@ -127,8 +127,6 @@ class FewshotDataset(Dataset):
         # Special scenario
         total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
         scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
-                            
-        copy_support = 0 #rng.binomial(1, 0.01)
         
         # Background
             
@@ -465,18 +463,11 @@ class FewshotDataset(Dataset):
                 
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
-                
-        if copy_support:
-            slice_start_sample = rng.integers(0, support_dur_samples-query_dur_samples)
-            audio_query = audio_support[slice_start_sample:slice_start_sample+query_dur_samples]
-            query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
 
         if self.args.window_train_support:
-            audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)        
-
+            audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
 
         return audio_support, support_labels, audio_query, query_labels
-
 
     def __len__(self):
         return self.args.n_synthetic_examples
@@ -509,7 +500,10 @@ class InferenceDataset(Dataset):
         # support_audio (Tensor) : (support_dur_samples,)
         # support_labels (Tensor) : (support_dur_samples,)
         # query_audio (Tensor) : (query_dur_samples)
-        hop_ratio = 1
+        if args.window_inference_query:
+            hop_ratio = 0.5
+        else:
+            hop_ratio = 1
         self.args = args
         self.support_audio = support_audio
         self.support_labels = support_labels

@@ -179,14 +179,14 @@ class ATSTEncoder(nn.Module):
 class FewShotModel(nn.Module):
     def __init__(self, args):
         super().__init__()
+        self.args = args
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        if args.atst_frame:
+        if self.args.atst_frame:
             self.audio_encoder = ATSTEncoder(args)
         else:
             self.audio_encoder = AvesEncoder(args)
 
         self.label_encoder = LabelEncoder(args)
-        self.args = args
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
         self.confidence_transformer = ContinuousTransformerWrapper(
             dim_in = 512,
@@ -203,8 +203,6 @@ class FewShotModel(nn.Module):
             )
         )
         
-        
-         
         cl = torch.normal(torch.zeros((1,1,512)), torch.ones((1,1,512)))
         self.cls_token = torch.nn.parameter.Parameter(data=cl.to(device))
         # assert self.audio_chunk_size_samples % 2 == 0, "chunk size must be even, to allow for 50% windowing"
@@ -224,20 +222,18 @@ class FewShotModel(nn.Module):
         support_pad_len = self.audio_chunk_size_samples - (support_audio.size(1) % self.audio_chunk_size_samples)
         if support_pad_len>0:
             support_labels = F.pad(support_labels, (0,support_pad_len))
-
         
         #NOTE: ATST has its own MinMax scaler
-        # normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-        # normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-        # support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
-        # query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+        if not self.args.atst_frame:
+            normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+            normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+            support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+            query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
         
         # encode audio and labels
         query_logits = []
         query_confidences = []
         
-        # with torch.no_grad(): # don't backprop across query embedding, since it is duplicated so much will slow down & cause imbalance
-        #     query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
         query_audio_encoded = self.audio_encoder(query_audio) # (batch, embedding_dim, time/scale_factor)
             
         support_len_samples = support_audio.size(1)

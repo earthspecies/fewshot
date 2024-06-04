@@ -33,7 +33,7 @@ def parse_args(args,allow_unknown=False):
     # Training
     parser.add_argument('--train', action="store_true")
     parser.add_argument('--batch-size', type=int, default=8)
-    parser.add_argument('--num-workers', type=int, default=8)
+    parser.add_argument('--num-workers', type=int, default=12)
     parser.add_argument('--lr', type=float, default=.0001) 
     parser.add_argument('--unfreeze-encoder-step', type=int, default=5000)
     parser.add_argument('--checkpoint-frequency', type=int, default=200)
@@ -52,7 +52,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--xeno-canto-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/xeno_canto_background_audio_info.csv')
     parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_bio.csv')
     parser.add_argument('--nonbio-pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_nonbio.csv')
-    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
+    parser.add_argument('--scenarios', type=str, default="normal,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
     
     parser.add_argument('--min-background-duration', type=float, default = 6, help = "the min dur in seconds that a file is allowed to be, in order for it to be used as background audio.")
     parser.add_argument('--max-pseudovox-duration', type=float, default=12, help= "the max dur in seconds that a pseudovox may be")
@@ -64,11 +64,12 @@ def parse_args(args,allow_unknown=False):
     # Evaluation
     parser.add_argument('--dcase-ref-files-path', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set/", type=str, help="Path to parent dir of DCASE files to evaluate on")
     parser.add_argument('--dcase-evaluation-manifest-fp', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set_manifest.csv", type=str, help="Path to manifest of DCASE files to evaluate on")
-    parser.add_argument('--inference-temperature', default = 1, type=float, help="softmax temp during inference. If <0 will adapt to support length, the exact negative value doesn't matter")
-    parser.add_argument('--inference-threshold', default = 0, type=float, help = "logit threshold to count as positive")
+    # parser.add_argument('--inference-temperature', default = 1, type=float, help="Deprecated")
+    parser.add_argument('--inference-threshold', default = 0.5, type=float, help = "prob threshold to count as positive")
     parser.add_argument('--inference-n-chunks-to-keep', default=10, type=int, help="longer means support during inference will be longer")
     parser.add_argument('--inference-chunk-size-sec', default =16, type=float, help ="duration of audio chunks included in support")
     parser.add_argument('--window-inference-support', action="store_true", help="window the support audio during inference")
+    parser.add_argument('--window-inference-query', action="store_true", help="window the query audio during inference")
     
     args = parser.parse_args(args)
     
@@ -77,7 +78,6 @@ def parse_args(args,allow_unknown=False):
     check_config(args)
 
     return args
-
 
 def save_params(args):
     """ Save a copy of the params used for this experiment """
@@ -106,3 +106,7 @@ def check_config(args):
     assert args.support_dur_sec % args.audio_chunk_size_sec == 0
     # assert args.query_dur_sec % args.audio_chunk_size_sec == 0
     assert args.audio_chunk_size_sec * args.sr % args.scale_factor == 0
+    if args.atst_frame:
+        assert args.embedding_dim == 9216
+        assert args.scale_factor == 640
+        assert args.audio_chunk_size_sec == 10
