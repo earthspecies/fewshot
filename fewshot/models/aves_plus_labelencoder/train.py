@@ -65,7 +65,7 @@ def main(args):
         model = initialize_model(args)
         final_model_fp = os.path.join(args.experiment_dir, "final_model.pt")
         cp = torch.load(final_model_fp)
-        model.load_state_dict(cp["model_state_dict"])
+        model.load_state_dict(cp) #["model_state_dict"])
     else:
         model = initialize_model(args)
     
@@ -246,9 +246,10 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
     else:
         dataloader = get_dataloader(args)
     
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup)
+    assert args.n_steps_warmup % args.gradient_accumulation_steps == 0, "Warmup must be divisible by gradient accumulation steps to ensure proper scheduling"
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.n_steps_warmup//args.gradient_accumulation_steps)
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, len(dataloader), eta_min=0, last_epoch=-1)
-    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup], last_epoch=-1)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], [args.n_steps_warmup//args.gradient_accumulation_steps], last_epoch=-1)
     
     scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
     history = {'loss': [], 'learning_rate': [], 'accuracy': [], 'precision': [], 'recall': []}
@@ -336,7 +337,7 @@ def train(rank, dataset, world_size, model_fn, args, single_gpu=False):
             torch.save(checkpoint_dict, os.path.join(args.experiment_dir, f"model_{t}.pt"))
             Path(os.path.join(args.experiment_dir, f"model_{int(t-3*args.checkpoint_frequency)}.pt")).unlink(missing_ok=True)
         
-        if rank == 0:
+        if (rank == 0) and (t == (len(dataloader) - 1)):
             torch.save(model.state_dict() if single_gpu else model.module.state_dict(), os.path.join(args.experiment_dir, "final_model.pt"))
     
     if not single_gpu:
