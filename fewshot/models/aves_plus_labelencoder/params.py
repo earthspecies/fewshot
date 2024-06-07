@@ -70,6 +70,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--inference-chunk-size-sec', default =16, type=float, help ="duration of audio chunks included in support")
     parser.add_argument('--window-inference-support', action="store_true", help="window the support audio during inference")
     parser.add_argument('--window-inference-query', action="store_true", help="window the query audio during inference")
+    parser.add_argument('--inference-hard-negative-sampling', action="store_true", help="sample hard negatives for prompt")
     
     args = parser.parse_args(args)
     

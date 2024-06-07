@@ -12,10 +12,15 @@ from fewshot.data.data import get_inference_dataloader, load_audio, apply_window
 # Get cpu or gpu device for training.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def process_dcase(audio, annotations, args):
+def process_dcase(audio, annotations, sr, chunk_size_sec, max_n_chunks_to_keep, scale_factor=None, support_probs = None):
     # TODO: UNK is not handled carefully
-    # TODO: How to handle extremely long support?
+    # TODO: max_n_chunks_to_keep is over-ridden when there are more chunks that contain POS events than max_n_chunks_to_keep
     # print("UNK ASSUMED POS!!")
+    
+    if support_probs is None:
+        hard_negative_sampling = False
+    else:
+        hard_negative_sampling = True
     
     rng = np.random.default_rng(0)
         
@@ -26,46 +31,63 @@ def process_dcase(audio, annotations, args):
     annot_pos_support_tensor = torch.zeros_like(audio)
     pos_support_end = annot_pos_support["Endtime"].max()
     for i, row in annot_pos_support.iterrows():
-        start_sample = int(row['Starttime'] *args.sr)
-        end_sample = int(row['Endtime'] *args.sr)
+        start_sample = int(row['Starttime'] * sr)
+        end_sample = int(row['Endtime'] * sr)
         annot_pos_support_tensor[start_sample:end_sample] = 2
         
     annot_unk = annotations[annotations["Q"] == "UNK"].reset_index()
     annot_unk_support = annot_unk[annot_unk["Starttime"] <= pos_support_end]
     for i, row in annot_unk_support.iterrows():
-        start_sample = int(row['Starttime'] *args.sr)
-        end_sample = int(row['Endtime'] *args.sr)
+        start_sample = int(row['Starttime'] * sr)
+        end_sample = int(row['Endtime'] * sr)
         annot_pos_support_tensor[start_sample:end_sample] = 2
     
     support_end_time = annot_pos_support['Endtime'].max()+0.1
-    support_end_sample = int(support_end_time*args.sr)
+    support_end_sample = int(support_end_time* sr)
     
     support_audio = audio[:support_end_sample]
     support_annotations = annot_pos_support_tensor[:support_end_sample]
     
     # Sub-select from support audio so we don't end up with hours
-    # chunk_size_sec = args.support_dur_sec
-    chunk_size_samples = int(args.sr * args.inference_chunk_size_sec)
-    max_n_chunks_to_keep = args.inference_n_chunks_to_keep
+    chunk_size_samples = int(sr * chunk_size_sec)
     
     chunks_to_keep = []
     chunks_to_maybe_keep = []
+    chunks_to_maybe_keep_probs = []
     
     for chunk_start in np.arange(0, support_end_sample, chunk_size_samples):
         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
-        annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/args.sr) & (annot_pos['Starttime'] < chunk_end/args.sr)]
-        annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/args.sr) & (annot_pos['Endtime'] < chunk_end/args.sr)]
-        annot_pos_long_sub = annot_pos[(annot_pos['Starttime'] < chunk_start/args.sr) &(annot_pos['Endtime'] >= chunk_end/args.sr)]
+        annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/sr) & (annot_pos['Starttime'] < chunk_end/sr)]
+        annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/sr) & (annot_pos['Endtime'] < chunk_end/sr)]
+        annot_pos_long_sub = annot_pos[(annot_pos['Starttime'] < chunk_start/sr) &(annot_pos['Endtime'] >= chunk_end/sr)]
         if len(annot_pos_start_sub) + len(annot_pos_end_sub) + len(annot_pos_long_sub) >0:
             chunks_to_keep.append(chunk_start)
         else:
             chunks_to_maybe_keep.append(chunk_start)
-            
-    while (len(chunks_to_keep) < max_n_chunks_to_keep) and (len(chunks_to_maybe_keep) > 0):
-        # choose chunks to include
-        chunks_to_maybe_keep = list(rng.permutation(chunks_to_maybe_keep))
-        to_add = chunks_to_maybe_keep.pop()
-        chunks_to_keep.append(to_add)
+            if hard_negative_sampling:
+                chunk_probs = support_probs[chunk_start//scale_factor:chunk_end//scale_factor]
+                if len(chunk_probs)>0:
+                    chunks_to_maybe_keep_probs.append(float(chunk_probs.max()))
+                else:
+                    chunks_to_maybe_keep_probs.append(0)
+    
+    if hard_negative_sampling:
+        # This is the situation where we have previously gathered probs for the full support audio, in order to do hard negative sampling
+        srtidx = np.argsort(chunks_to_maybe_keep_probs)
+        chunks_to_maybe_keep = np.array(chunks_to_maybe_keep)
+        chunks_to_maybe_keep = list(chunks_to_maybe_keep[srtidx]) # sort in ascending probability order
+        
+        while (len(chunks_to_keep) < max_n_chunks_to_keep) and (len(chunks_to_maybe_keep) > 0):
+            # choose chunks to include
+            to_add = chunks_to_maybe_keep.pop() # get last chunk, i.e. the one with highest prob
+            chunks_to_keep.append(to_add)
+    
+    else:
+        while (len(chunks_to_keep) < max_n_chunks_to_keep) and (len(chunks_to_maybe_keep) > 0):
+            # choose chunks to include
+            chunks_to_maybe_keep = list(rng.permutation(chunks_to_maybe_keep))
+            to_add = chunks_to_maybe_keep.pop()
+            chunks_to_keep.append(to_add)
         
     chunks_to_keep = sorted(chunks_to_keep)
     support_audio_new = []
@@ -82,11 +104,87 @@ def process_dcase(audio, annotations, args):
             
     assert len(support_audio) == len(support_annotations)
     
-    print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/args.sr}")
+    print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/sr}")
     
     min_vox_dur_support = (annot_pos_support["Endtime"] - annot_pos_support["Starttime"]).min()
     
     return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support
+
+
+
+# def process_dcase(audio, annotations, sr, chunk_size_sec, max_n_chunks_to_keep):
+#     # TODO: UNK is not handled carefully
+#     # TODO: max_n_chunks_to_keep is over-ridden when there are more chunks that contain POS events than max_n_chunks_to_keep
+#     # print("UNK ASSUMED POS!!")
+    
+#     rng = np.random.default_rng(0)
+        
+#     annotations = annotations.sort_values(by="Starttime").reset_index()
+        
+#     annot_pos = annotations[annotations["Q"] == "POS"].reset_index()
+#     annot_pos_support = annot_pos.iloc[:5] # grab first five pos examples
+#     annot_pos_support_tensor = torch.zeros_like(audio)
+#     pos_support_end = annot_pos_support["Endtime"].max()
+#     for i, row in annot_pos_support.iterrows():
+#         start_sample = int(row['Starttime'] * sr)
+#         end_sample = int(row['Endtime'] * sr)
+#         annot_pos_support_tensor[start_sample:end_sample] = 2
+        
+#     annot_unk = annotations[annotations["Q"] == "UNK"].reset_index()
+#     annot_unk_support = annot_unk[annot_unk["Starttime"] <= pos_support_end]
+#     for i, row in annot_unk_support.iterrows():
+#         start_sample = int(row['Starttime'] * sr)
+#         end_sample = int(row['Endtime'] * sr)
+#         annot_pos_support_tensor[start_sample:end_sample] = 2
+    
+#     support_end_time = annot_pos_support['Endtime'].max()+0.1
+#     support_end_sample = int(support_end_time* sr)
+    
+#     support_audio = audio[:support_end_sample]
+#     support_annotations = annot_pos_support_tensor[:support_end_sample]
+    
+#     # Sub-select from support audio so we don't end up with hours
+#     chunk_size_samples = int(sr * chunk_size_sec)
+    
+#     chunks_to_keep = []
+#     chunks_to_maybe_keep = []
+    
+#     for chunk_start in np.arange(0, support_end_sample, chunk_size_samples):
+#         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
+#         annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/sr) & (annot_pos['Starttime'] < chunk_end/sr)]
+#         annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/sr) & (annot_pos['Endtime'] < chunk_end/sr)]
+#         annot_pos_long_sub = annot_pos[(annot_pos['Starttime'] < chunk_start/sr) &(annot_pos['Endtime'] >= chunk_end/sr)]
+#         if len(annot_pos_start_sub) + len(annot_pos_end_sub) + len(annot_pos_long_sub) >0:
+#             chunks_to_keep.append(chunk_start)
+#         else:
+#             chunks_to_maybe_keep.append(chunk_start)
+            
+#     while (len(chunks_to_keep) < max_n_chunks_to_keep) and (len(chunks_to_maybe_keep) > 0):
+#         # choose chunks to include
+#         chunks_to_maybe_keep = list(rng.permutation(chunks_to_maybe_keep))
+#         to_add = chunks_to_maybe_keep.pop()
+#         chunks_to_keep.append(to_add)
+        
+#     chunks_to_keep = sorted(chunks_to_keep)
+#     support_audio_new = []
+#     support_annot_new = []
+#     for chunk_start in chunks_to_keep:
+#         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
+#         support_audio_new.append(support_audio[chunk_start:chunk_end])
+#         support_annot_new.append(support_annotations[chunk_start:chunk_end])
+        
+#     support_audio = torch.cat(support_audio_new)
+#     support_annotations = torch.cat(support_annot_new)
+    
+#     query_audio = audio[support_end_sample:]
+            
+#     assert len(support_audio) == len(support_annotations)
+    
+#     print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/sr}")
+    
+#     min_vox_dur_support = (annot_pos_support["Endtime"] - annot_pos_support["Starttime"]).min()
+    
+#     return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support
 
 def fill_holes(m, max_hole):
     stops = m[:-1] * ~m[1:]
@@ -306,6 +404,63 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
 
     return query_probs
 
+def get_probs(model, support_audio, support_annotations, query_audio, args):
+    
+    # Pad support so we don't have empty sounds
+    support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+    if support_pad>0:
+        support_audio = torch.cat((support_audio, support_audio[:support_pad]))
+        support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
+
+    # pad etc
+    if args.window_inference_support:
+        support_audio, support_annotations = apply_windowing(support_audio, support_annotations, model.audio_chunk_size_samples)
+
+    # Pad query to match training length
+    query_dur_samples = int(args.query_dur_sec * args.sr)
+    query_pad = (query_dur_samples - (query_audio.size(0) % query_dur_samples)) % query_dur_samples
+    if query_pad>0:
+        query_audio = F.pad(query_audio, (0,query_pad)) # TODO: add attention mask
+
+    if args.window_inference_query:
+        assert model.audio_chunk_size_samples % 2 == 0
+    assert len(support_annotations) == len(support_audio)
+
+    inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)
+    all_query_predictions = []
+
+    with torch.no_grad():
+        cached_support_encoded = None
+        for i, data_item in tqdm(enumerate(inference_dataloader)):
+            sa, sl, qa = data_item
+            sa = sa.to(device)
+
+            if cached_support_encoded is None:
+                cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device), args)
+
+            query_predictions = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), args)
+            all_query_predictions.append(query_predictions)
+
+    all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
+
+    if args.window_inference_query:
+        left_quarterwindow = all_query_predictions.shape[1] // 4
+        right_quarterwindow = (all_query_predictions.shape[1] // 2) - left_quarterwindow
+        middle_bits = all_query_predictions[:,left_quarterwindow:-right_quarterwindow].reshape(-1)
+        far_left_bit = all_query_predictions[0,:left_quarterwindow]
+        far_right_bit = all_query_predictions[-1,-right_quarterwindow:]
+        all_query_predictions = np.concatenate((far_left_bit, middle_bits, far_right_bit))
+
+    else:
+        all_query_predictions = all_query_predictions.reshape(-1)
+
+    # Remove query padding if necessary
+    if query_pad // args.scale_factor > 0:
+        all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)]  # omit predictions for padded region at end of query
+        
+    return all_query_predictions
+        
+
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
     
@@ -317,71 +472,33 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
-        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
+        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep)
         
         all_query_predictions = np.load(np_fp)
         
-    else:
-        
+    else:        
         model = model.to(device)
         model.eval()
 
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
-
-        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
         
-        # pad etc
-        if args.window_inference_support:
-            support_audio, support_annotations = apply_windowing(support_audio, support_annotations, model.audio_chunk_size_samples)
-        
-        # Pad support so we don't have empty sounds
-        support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-        if support_pad>0:
-            support_audio = torch.cat((support_audio, support_audio[:support_pad]))
-            support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
-        
-        # Pad query to match training length
-        query_dur_samples = int(args.query_dur_sec * args.sr)
-        query_pad = (query_dur_samples - (query_audio.size(0) % query_dur_samples)) % query_dur_samples
-        if query_pad>0:
-            query_audio = F.pad(query_audio, (0,query_pad)) # TODO: add attention mask
-        
-        if args.window_inference_query:
-            assert model.audio_chunk_size_samples % 2 == 0
-        assert len(support_annotations) == len(support_audio)
-        
-        inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)
-        all_query_predictions = []
-        
-        with torch.no_grad():
-            cached_support_encoded = None
-            for i, data_item in tqdm(enumerate(inference_dataloader)):
-                sa, sl, qa = data_item
-                sa = sa.to(device)
-                
-                if cached_support_encoded is None:
-                    cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device), args)
-                
-                query_predictions = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), args)
-                all_query_predictions.append(query_predictions)
-        
-        all_query_predictions = torch.cat(all_query_predictions, dim=0).cpu().numpy()
-        
-        if args.window_inference_query:
-            left_quarterwindow = all_query_predictions.shape[1] // 4
-            right_quarterwindow = (all_query_predictions.shape[1] // 2) - left_quarterwindow
-            middle_bits = all_query_predictions[:,left_quarterwindow:-right_quarterwindow].reshape(-1)
-            far_left_bit = all_query_predictions[0,:left_quarterwindow]
-            far_right_bit = all_query_predictions[-1,-right_quarterwindow:]
-            all_query_predictions = np.concatenate((far_left_bit, middle_bits, far_right_bit))
-        
-        else:
-            all_query_predictions = all_query_predictions.reshape(-1)
-
-        # Remove query padding if necessary
-        if query_pad // args.scale_factor > 0:
-            all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)]  # omit predictions for padded region at end of query
+        if args.inference_hard_negative_sampling:
+            # look for high prob negative events in full support audio
+            print(f"Applying hard negative sampling")
+            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, 1)
+            support_audio_full = audio[:int(time_shift_sec*args.sr)]
+            support_audio_full_predictions = get_probs(model, support_audio, support_annotations, support_audio_full, args)
+            
+            # re-generate support audio, incorporating high prob negative events as hard negatives
+            print("Re-computing support audio using hard negatives")
+            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep, scale_factor=args.scale_factor, support_probs = torch.from_numpy(support_audio_full_predictions))
+            all_query_predictions = get_probs(model, support_audio, support_annotations, query_audio, args)
+            
+        else:        
+            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep)
+            
+            all_query_predictions = get_probs(model, support_audio, support_annotations, query_audio, args)
         
         # save np array of predictions
         fn = os.path.basename(audio_fp)

@@ -35,18 +35,15 @@ def load_audio(fp, target_sr):
 
 def apply_windowing(audio, labels, chunk_size_samples):
     audio_dur_samples = audio.size(0)
-    remainder = audio_dur_samples % chunk_size_samples
-
-    if remainder >= chunk_size_samples // 2:
-        to_cut = remainder - chunk_size_samples // 2
-    else:
-        to_cut = remainder + chunk_size_samples // 2
-
-    halfwindowed_audio_len = audio[to_cut:].size(0)
-    assert halfwindowed_audio_len % chunk_size_samples == chunk_size_samples // 2, "Incorrect windowing math!"
-
-    audio = torch.cat((audio[to_cut:], audio))
-    labels = torch.cat((labels[to_cut:], labels))
+    assert audio_dur_samples % chunk_size_samples == 0
+    assert chunk_size_samples % 2 == 0
+    
+    if audio_dur_samples>chunk_size_samples:
+        halfwindow_audio = audio[chunk_size_samples//2: -chunk_size_samples//2]
+        halfwindow_labels = labels[chunk_size_samples//2: -chunk_size_samples//2]
+        
+        audio = torch.cat((audio, halfwindow_audio))
+        labels = torch.cat((labels, halfwindow_labels))
 
     return audio, labels
 
