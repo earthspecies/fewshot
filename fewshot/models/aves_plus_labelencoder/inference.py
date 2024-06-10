@@ -107,84 +107,10 @@ def process_dcase(audio, annotations, sr, chunk_size_sec, max_n_chunks_to_keep, 
     print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/sr}")
     
     min_vox_dur_support = (annot_pos_support["Endtime"] - annot_pos_support["Starttime"]).min()
+    vox_durs_support = list(annot_pos_support["Endtime"] - annot_pos_support["Starttime"])
     
-    return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support
+    return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support, vox_durs_support
 
-
-
-# def process_dcase(audio, annotations, sr, chunk_size_sec, max_n_chunks_to_keep):
-#     # TODO: UNK is not handled carefully
-#     # TODO: max_n_chunks_to_keep is over-ridden when there are more chunks that contain POS events than max_n_chunks_to_keep
-#     # print("UNK ASSUMED POS!!")
-    
-#     rng = np.random.default_rng(0)
-        
-#     annotations = annotations.sort_values(by="Starttime").reset_index()
-        
-#     annot_pos = annotations[annotations["Q"] == "POS"].reset_index()
-#     annot_pos_support = annot_pos.iloc[:5] # grab first five pos examples
-#     annot_pos_support_tensor = torch.zeros_like(audio)
-#     pos_support_end = annot_pos_support["Endtime"].max()
-#     for i, row in annot_pos_support.iterrows():
-#         start_sample = int(row['Starttime'] * sr)
-#         end_sample = int(row['Endtime'] * sr)
-#         annot_pos_support_tensor[start_sample:end_sample] = 2
-        
-#     annot_unk = annotations[annotations["Q"] == "UNK"].reset_index()
-#     annot_unk_support = annot_unk[annot_unk["Starttime"] <= pos_support_end]
-#     for i, row in annot_unk_support.iterrows():
-#         start_sample = int(row['Starttime'] * sr)
-#         end_sample = int(row['Endtime'] * sr)
-#         annot_pos_support_tensor[start_sample:end_sample] = 2
-    
-#     support_end_time = annot_pos_support['Endtime'].max()+0.1
-#     support_end_sample = int(support_end_time* sr)
-    
-#     support_audio = audio[:support_end_sample]
-#     support_annotations = annot_pos_support_tensor[:support_end_sample]
-    
-#     # Sub-select from support audio so we don't end up with hours
-#     chunk_size_samples = int(sr * chunk_size_sec)
-    
-#     chunks_to_keep = []
-#     chunks_to_maybe_keep = []
-    
-#     for chunk_start in np.arange(0, support_end_sample, chunk_size_samples):
-#         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
-#         annot_pos_start_sub = annot_pos[(annot_pos['Starttime'] >= chunk_start/sr) & (annot_pos['Starttime'] < chunk_end/sr)]
-#         annot_pos_end_sub = annot_pos[(annot_pos['Endtime'] >= chunk_start/sr) & (annot_pos['Endtime'] < chunk_end/sr)]
-#         annot_pos_long_sub = annot_pos[(annot_pos['Starttime'] < chunk_start/sr) &(annot_pos['Endtime'] >= chunk_end/sr)]
-#         if len(annot_pos_start_sub) + len(annot_pos_end_sub) + len(annot_pos_long_sub) >0:
-#             chunks_to_keep.append(chunk_start)
-#         else:
-#             chunks_to_maybe_keep.append(chunk_start)
-            
-#     while (len(chunks_to_keep) < max_n_chunks_to_keep) and (len(chunks_to_maybe_keep) > 0):
-#         # choose chunks to include
-#         chunks_to_maybe_keep = list(rng.permutation(chunks_to_maybe_keep))
-#         to_add = chunks_to_maybe_keep.pop()
-#         chunks_to_keep.append(to_add)
-        
-#     chunks_to_keep = sorted(chunks_to_keep)
-#     support_audio_new = []
-#     support_annot_new = []
-#     for chunk_start in chunks_to_keep:
-#         chunk_end = min(chunk_start+chunk_size_samples, support_end_sample)
-#         support_audio_new.append(support_audio[chunk_start:chunk_end])
-#         support_annot_new.append(support_annotations[chunk_start:chunk_end])
-        
-#     support_audio = torch.cat(support_audio_new)
-#     support_annotations = torch.cat(support_annot_new)
-    
-#     query_audio = audio[support_end_sample:]
-            
-#     assert len(support_audio) == len(support_annotations)
-    
-#     print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/sr}")
-    
-#     min_vox_dur_support = (annot_pos_support["Endtime"] - annot_pos_support["Starttime"]).min()
-    
-#     return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support
 
 def fill_holes(m, max_hole):
     stops = m[:-1] * ~m[1:]
@@ -218,101 +144,151 @@ def delete_short(m, min_pos):
         
     return m
 
-def median_filter(predictions, kernel_size):
-    """Apply median filtering to the predictions."""
-    padded_preds = np.pad(predictions, (kernel_size // 2, kernel_size // 2), 'constant', constant_values=(0, 0))
-    filtered_preds = np.zeros_like(predictions)
-    for i in range(len(predictions)):
-        filtered_preds[i] = np.median(padded_preds[i:i + kernel_size])
-    return filtered_preds
+# def median_filter(predictions, kernel_size):
+#     """Apply median filtering to the predictions."""
+#     padded_preds = np.pad(predictions, (kernel_size // 2, kernel_size // 2), 'constant', constant_values=(0, 0))
+#     filtered_preds = np.zeros_like(predictions)
+#     for i in range(len(predictions)):
+#         filtered_preds[i] = np.median(padded_preds[i:i + kernel_size])
+#     return filtered_preds
 
-def calculate_adaptive_threshold(avg_event_duration_sec):
-    """Calculate an adaptive threshold based on the average event duration in seconds."""
-    min_threshold = .05
-    long_cutoff = 15
-    short_cutoff = 1
-    if avg_event_duration_sec >= long_cutoff:
-        return min_threshold  # minimum threshold for average durations of 10 seconds or more
-    elif avg_event_duration_sec <= short_cutoff:
-        return 0.5  # Minimum threshold for average durations of 2 seconds or less
+# def calculate_adaptive_threshold(avg_event_duration_sec):
+#     """Calculate an adaptive threshold based on the average event duration in seconds."""
+#     min_threshold = .05
+#     long_cutoff = 15
+#     short_cutoff = 1
+#     if avg_event_duration_sec >= long_cutoff:
+#         return min_threshold  # minimum threshold for average durations of 10 seconds or more
+#     elif avg_event_duration_sec <= short_cutoff:
+#         return 0.5  # Minimum threshold for average durations of 2 seconds or less
+#     else:
+#         # Linearly interpolate between 0.5 and min_threshold
+#         return 0.5 - (avg_event_duration_sec - short_cutoff) * (0.5 - min_threshold) / (long_cutoff - short_cutoff)
+
+# def calculate_average_event_duration(support_annotations, sr):
+#     """
+#     Calculate the average duration of positive events in the support annotations.
+    
+#     Args:
+#         support_annotations (torch.Tensor): Frame labels for the support set where 2 indicates a positive event.
+#         sr (int): Sample rate of the audio.
+    
+#     Returns:
+#         float: Average duration of positive events in seconds.
+#     """
+#     # Convert support annotations to numpy array for easier processing
+#     support_annotations_np = support_annotations.numpy()
+    
+#     # Find all indices where the label is 2 (positive event)
+#     positive_indices = np.where(support_annotations_np == 2)[0]
+    
+#     if len(positive_indices) == 0:
+#         return 0.0  # No positive events found
+    
+#     # Identify boundaries where the difference between consecutive positive indices is greater than 1
+#     boundaries = np.where(np.diff(positive_indices) > 1)[0]
+    
+#     # Split the positive indices into separate events
+#     event_splits = np.split(positive_indices, boundaries + 1)
+    
+#     # Calculate the durations of all events
+#     event_durations = [(event[-1] - event[0] + 1) / sr for event in event_splits]
+    
+#     # Calculate the average duration
+#     average_event_duration = np.mean(event_durations)
+    
+#     return average_event_duration
+
+    
+def get_threshold(all_query_predictions, args, min_vox_dur_support, vox_durs_support):
+    if args.inference_threshold is None:
+        """
+        Adaptive thresholding method.
+        """
+        print("Using adaptive thresholding method")
+        pred_sr = args.sr // args.scale_factor
+        vox_durs_mean = np.mean(vox_durs_support)
+        vox_durs_std = np.std(vox_durs_support, ddof=1)
+
+        def likelihood_of_dur(x):
+            return np.exp(-0.5*((x-vox_durs_mean)/vox_durs_std)**2)
+
+        def prior_on_threshold(t):
+            return np.exp(-0.5*(t**2)) # prior: standard normal distribution on logits
+
+        best_likelihood = 0.1
+        best_threshold = 0
+
+        for threshold in np.arange(-2,2.01,0.05):
+
+            all_query_predictions_binary = all_query_predictions >= 1 / (1 + np.exp(-threshold))
+
+            # fill gaps and omit extremely short predictions
+            max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
+            min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
+
+            preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
+            preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
+
+            starts = preds[1:] * ~preds[:-1]
+            starts = np.where(starts)[0] + 1
+
+            if preds[0]:
+                starts = np.concatenate(np.zeros(1,), starts)
+
+            d = {"Starttime" : [], "Endtime" : []}
+
+            for start in starts:
+                look_forward = preds[start:]
+                ends = np.where(~look_forward)[0]
+                if len(ends)>0:
+                    end = start+np.amin(ends)
+                else:
+                    end = len(preds)-1
+                d["Starttime"].append(start/pred_sr)
+                d["Endtime"].append(end/pred_sr)
+
+            d = pd.DataFrame(d)
+
+            durations = (d["Endtime"] - d["Starttime"]).values
+            if len(durations) == 0:
+                likelihood = -1
+            else:
+                likelihood = likelihood_of_dur(durations).mean() * prior_on_threshold(threshold)
+            if likelihood > best_likelihood:
+                best_likelihood = likelihood
+                best_threshold = threshold
+
+        threshold = 1 / (1 + np.exp(-best_threshold))
+        print(f"Found best threshold {threshold}, based on distribution of durations")
+        return threshold
     else:
-        # Linearly interpolate between 0.5 and min_threshold
-        return 0.5 - (avg_event_duration_sec - short_cutoff) * (0.5 - min_threshold) / (long_cutoff - short_cutoff)
+        return args.inference_threshold
 
-def calculate_average_event_duration(support_annotations, sr):
-    """
-    Calculate the average duration of positive events in the support annotations.
-    
-    Args:
-        support_annotations (torch.Tensor): Frame labels for the support set where 2 indicates a positive event.
-        sr (int): Sample rate of the audio.
-    
-    Returns:
-        float: Average duration of positive events in seconds.
-    """
-    # Convert support annotations to numpy array for easier processing
-    support_annotations_np = support_annotations.numpy()
-    
-    # Find all indices where the label is 2 (positive event)
-    positive_indices = np.where(support_annotations_np == 2)[0]
-    
-    if len(positive_indices) == 0:
-        return 0.0  # No positive events found
-    
-    # Identify boundaries where the difference between consecutive positive indices is greater than 1
-    boundaries = np.where(np.diff(positive_indices) > 1)[0]
-    
-    # Split the positive indices into separate events
-    event_splits = np.split(positive_indices, boundaries + 1)
-    
-    # Calculate the durations of all events
-    event_durations = [(event[-1] - event[0] + 1) / sr for event in event_splits]
-    
-    # Calculate the average duration
-    average_event_duration = np.mean(event_durations)
-    
-    return average_event_duration
 
-    
-def get_threshold(support_annotations, all_query_predictions, args):
-    """
-    Adaptive thresholding method.
-    """
-    return args.inference_threshold
-
-def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, support_annotations, threshold=None):
+def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, vox_durs_support):
     pred_sr = args.sr // args.scale_factor
     audio_fn = os.path.basename(audio_fp)
-
-    avg_event_duration = calculate_average_event_duration(support_annotations, args.sr)
-    avg_event_duration_frames = avg_event_duration * pred_sr
-    # threshold = calculate_adaptive_threshold(avg_event_duration)
     
-    # median_filter_window_size = max(3, int(avg_event_duration_frames // 4))  # Quarter of the average event duration, minimum of 3
-    # print(f"avg event frames {avg_event_duration_frames} median filter window size: {median_filter_window_size}")
-    # all_query_predictions = np.apply_along_axis(lambda x: median_filter(x, median_filter_window_size), 0, all_query_predictions)
-
-    if threshold == None:
-        all_query_predictions_binary = all_query_predictions >= args.inference_threshold # TODO
-    else:
-        all_query_predictions_binary = all_query_predictions >= threshold
-    preds = all_query_predictions_binary
+    threshold = get_threshold(all_query_predictions, args, min_vox_dur_support, vox_durs_support)
     
+    all_query_predictions_binary = all_query_predictions >= threshold
+
     # fill gaps and omit extremely short predictions
     max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
     min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
 
-    preds = fill_holes(preds, int(pred_sr*max_hole_size_sec))
+    preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
     preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
-    
+
     starts = preds[1:] * ~preds[:-1]
     starts = np.where(starts)[0] + 1
-    
+
     if preds[0]:
-        starts = np.concatenate(([0], starts))
-    
+        starts = np.concatenate(np.zeros(1,), starts)
+
     d = {"Audiofilename" : [], "Starttime" : [], "Endtime" : []}
-    
+
     for start in starts:
         look_forward = preds[start:]
         ends = np.where(~look_forward)[0]
@@ -323,9 +299,9 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
         d["Audiofilename"].append(audio_fn)
         d["Starttime"].append(start/pred_sr + time_shift_sec)
         d["Endtime"].append(end/pred_sr + time_shift_sec)
-            
+
     d = pd.DataFrame(d)
-    
+       
     return d
 
 def cache_support_encoded(model, support_audio, args):
@@ -459,7 +435,6 @@ def get_probs(model, support_audio, support_annotations, query_audio, args):
         all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)]  # omit predictions for padded region at end of query
         
     return all_query_predictions
-        
 
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
@@ -472,7 +447,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
-        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep)
+        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support, vox_durs_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep)
         
         all_query_predictions = np.load(np_fp)
         
@@ -486,24 +461,24 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         if args.inference_hard_negative_sampling:
             # look for high prob negative events in full support audio
             print(f"Applying hard negative sampling")
-            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, 1)
+            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support, vox_durs_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, 1)
             support_audio_full = audio[:int(time_shift_sec*args.sr)]
             support_audio_full_predictions = get_probs(model, support_audio, support_annotations, support_audio_full, args)
             
             # re-generate support audio, incorporating high prob negative events as hard negatives
             print("Re-computing support audio using hard negatives")
-            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep, scale_factor=args.scale_factor, support_probs = torch.from_numpy(support_audio_full_predictions))
+            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support, vox_durs_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep, scale_factor=args.scale_factor, support_probs = torch.from_numpy(support_audio_full_predictions))
             all_query_predictions = get_probs(model, support_audio, support_annotations, query_audio, args)
             
         else:        
-            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep)
+            support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support, vox_durs_support = process_dcase(audio, annotations, args.sr, args.inference_chunk_size_sec, args.inference_n_chunks_to_keep)
             
             all_query_predictions = get_probs(model, support_audio, support_annotations, query_audio, args)
         
         # save np array of predictions
         fn = os.path.basename(audio_fp)
         np.save(os.path.join(args.experiment_dir, fn[:-4]+".npy"), all_query_predictions)
-    d = postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, support_annotations)
+    d = postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, vox_durs_support)
     
     # Save raven st
     st = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : []}

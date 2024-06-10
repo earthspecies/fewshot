@@ -65,7 +65,7 @@ def parse_args(args,allow_unknown=False):
     parser.add_argument('--dcase-ref-files-path', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set/", type=str, help="Path to parent dir of DCASE files to evaluate on")
     parser.add_argument('--dcase-evaluation-manifest-fp', default="/home/jupyter/fewshot/data/DCASE2024_Development_Set/Validation_Set_manifest.csv", type=str, help="Path to manifest of DCASE files to evaluate on")
     # parser.add_argument('--inference-temperature', default = 1, type=float, help="Deprecated")
-    parser.add_argument('--inference-threshold', default = 0.5, type=float, help = "prob threshold to count as positive")
+    parser.add_argument('--inference-threshold', default = None, type=float, help = "prob threshold to count as positive; None uses adaptive threshold based on duration of support events")
     parser.add_argument('--inference-n-chunks-to-keep', default=10, type=int, help="longer means support during inference will be longer")
     parser.add_argument('--inference-chunk-size-sec', default =16, type=float, help ="duration of audio chunks included in support")
     parser.add_argument('--window-inference-support', action="store_true", help="window the support audio during inference")
