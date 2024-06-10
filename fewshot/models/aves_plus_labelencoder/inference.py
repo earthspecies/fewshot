@@ -84,8 +84,9 @@ def process_dcase(audio, annotations, args):
     print(f"Support audio, before subsampling: {support_end_time}. After subsampling: {len(support_audio)/args.sr}")
     
     min_vox_dur_support = (annot_pos_support["Endtime"] - annot_pos_support["Starttime"]).min()
+    vox_durs_support = list(annot_pos_support["Endtime"] - annot_pos_support["Starttime"])
     
-    return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support
+    return support_audio, support_annotations, query_audio, support_end_time, min_vox_dur_support, vox_durs_support
 
 def fill_holes(m, max_hole):
     stops = m[:-1] * ~m[1:]
@@ -120,30 +121,83 @@ def delete_short(m, min_pos):
     return m
     
 
-def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, threshold=None):
+def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, vox_durs_support):
     pred_sr = args.sr // args.scale_factor
     audio_fn = os.path.basename(audio_fp)
     
-    if threshold == None:
-        all_query_predictions_binary = all_query_predictions >= args.inference_threshold # TODO
-    else:
-        all_query_predictions_binary = all_query_predictions >= threshold
+    vox_durs_mean = np.mean(vox_durs_support)
+    vox_durs_std = np.std(vox_durs_support, ddof=1)
     
+    def likelihood_of_dur(x):
+        return np.exp(-0.5*((x-vox_durs_mean)/vox_durs_std)**2)
+    
+    def prior_on_threshold(t):
+        return np.exp(-0.5*(t**2))
+    
+    best_likelihood = 0.1
+    best_threshold = 0
+    
+    for threshold in np.arange(-2,2.1,0.05):
+
+        all_query_predictions_binary = all_query_predictions >= threshold
+
+        # fill gaps and omit extremely short predictions
+        max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
+        min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
+
+        preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
+        preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
+
+        starts = preds[1:] * ~preds[:-1]
+        starts = np.where(starts)[0] + 1
+
+        if preds[0]:
+            starts = np.concatenate(np.zeros(1,), starts)
+
+        d = {"Audiofilename" : [], "Starttime" : [], "Endtime" : []}
+
+        for start in starts:
+            look_forward = preds[start:]
+            ends = np.where(~look_forward)[0]
+            if len(ends)>0:
+                end = start+np.amin(ends)
+            else:
+                end = len(preds)-1
+            d["Audiofilename"].append(audio_fn)
+            d["Starttime"].append(start/pred_sr + time_shift_sec)
+            d["Endtime"].append(end/pred_sr + time_shift_sec)
+
+        d = pd.DataFrame(d)
+        
+        durations = (d["Endtime"] - d["Starttime"]).values
+        if len(durations) == 0:
+            likelihood = -1
+        else:
+            likelihood = likelihood_of_dur(durations).mean() * prior_on_threshold(threshold)
+        if likelihood > best_likelihood:
+            best_likelihood = likelihood
+            best_threshold = threshold
+    
+    threshold = best_threshold
+    print(f"Found best threshold {threshold}, based on distribution of durations")
+    
+    all_query_predictions_binary = all_query_predictions >= threshold
+
     # fill gaps and omit extremely short predictions
     max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
     min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
-    
+
     preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
     preds = delete_short(preds, int(pred_sr*min_vox_dur_sec))
-    
+
     starts = preds[1:] * ~preds[:-1]
     starts = np.where(starts)[0] + 1
-    
+
     if preds[0]:
         starts = np.concatenate(np.zeros(1,), starts)
-    
+
     d = {"Audiofilename" : [], "Starttime" : [], "Endtime" : []}
-    
+
     for start in starts:
         look_forward = preds[start:]
         ends = np.where(~look_forward)[0]
@@ -154,9 +208,9 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
         d["Audiofilename"].append(audio_fn)
         d["Starttime"].append(start/pred_sr + time_shift_sec)
         d["Endtime"].append(end/pred_sr + time_shift_sec)
-            
+
     d = pd.DataFrame(d)
-    
+       
     return d
 
 def cache_support_encoded(model, support_audio):
@@ -261,7 +315,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
-        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
+        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support, vox_durs_support = process_dcase(audio, annotations, args)
         all_query_predictions = np.load(np_fp)
     #
         
@@ -272,7 +326,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
-        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support = process_dcase(audio, annotations, args)
+        support_audio, support_annotations, query_audio, time_shift_sec, min_vox_dur_support, vox_durs_support = process_dcase(audio, annotations, args)
         
         # pad etc
         
@@ -345,47 +399,11 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         if query_pad // args.scale_factor > 0:
             all_query_predictions = all_query_predictions[:-(query_pad // args.scale_factor)] # omit predictions for padded region at end of query
         
-#         ##
-#         with torch.no_grad():
-#             for i, data_item in tqdm(enumerate(support_dataloader)):
-#                 sa, sl, sqa = data_item
-#                 sa = sa.to(device)
-                
-#                 support_predictions, support_labels_downsampled = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), sqa.to(device), temperature=temperature, query_labels=sl.to(device)) # lower temperature gives more weight to high confidence votes; use as hyperparam for long support sets?
-#                 all_support_predictions.append(support_predictions)
-        
-#         all_support_predictions = torch.cat(all_support_predictions, dim=0)
-#         assert all_support_predictions.size(1) % 4 == 0
-#         quarter_window = all_support_predictions.size(1)//4
-        
-#         all_support_predictions_windowed = torch.reshape(all_support_predictions[:, quarter_window:-quarter_window], (-1,))
-#         all_support_predictions = torch.cat((all_support_predictions[0,:quarter_window], all_support_predictions_windowed, all_support_predictions[-1,-quarter_window:])).cpu().numpy()   
-        
-#         support_labels_downsampled = support_labels_downsampled[0,:].cpu().numpy()
-            
-#         fn = os.path.basename(audio_fp)
-#         np.save(os.path.join(args.experiment_dir, fn[:-4]+"_support_predictions.npy"), all_support_predictions)
-                
-#         support_pos = all_support_predictions[support_labels_downsampled ==2]
-#         support_neg = all_support_predictions[support_labels_downsampled ==0]
-        
-#         avg_pos = np.median(support_pos)
-#         avg_neg = np.median(support_neg)
-#         print(avg_pos)
-        
-# #         threshold_learned = (avg_pos+avg_neg)/2
-        
-#         threshold_learned = avg_pos - 0.1*(avg_pos-avg_neg)
-#         # threshold_learned=0
-#         print(threshold_learned)
-        
-#         ##
-        
         # save np array of predictions
         fn = os.path.basename(audio_fp)
         np.save(os.path.join(args.experiment_dir, fn[:-4]+".npy"), all_query_predictions)
     
-    d = postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support)
+    d = postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_dur_support, vox_durs_support)
     
     # Save raven st
     st = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : []}
