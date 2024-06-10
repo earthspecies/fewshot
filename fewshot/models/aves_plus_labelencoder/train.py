@@ -92,7 +92,7 @@ def get_loss_fn(args):
         query_labels = torch.flatten(query_labels)
         
         query_binary = torch.minimum(query_labels, torch.ones_like(query_labels))  # 2->1
-        loss = F.binary_cross_entropy_with_logits(logits, query_binary) #sigmoid_focal_loss(logits, query_binary)  
+        loss = sigmoid_focal_loss(logits, query_binary)  
         unknown_mask = query_labels != 1
         loss = loss * unknown_mask  # set loss of unknowns to 0
         loss = torch.mean(loss)
