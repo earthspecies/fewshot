@@ -143,62 +143,6 @@ def delete_short(m, min_pos):
             m[clip[0]:clip[1]] = True
         
     return m
-
-# def median_filter(predictions, kernel_size):
-#     """Apply median filtering to the predictions."""
-#     padded_preds = np.pad(predictions, (kernel_size // 2, kernel_size // 2), 'constant', constant_values=(0, 0))
-#     filtered_preds = np.zeros_like(predictions)
-#     for i in range(len(predictions)):
-#         filtered_preds[i] = np.median(padded_preds[i:i + kernel_size])
-#     return filtered_preds
-
-# def calculate_adaptive_threshold(avg_event_duration_sec):
-#     """Calculate an adaptive threshold based on the average event duration in seconds."""
-#     min_threshold = .05
-#     long_cutoff = 15
-#     short_cutoff = 1
-#     if avg_event_duration_sec >= long_cutoff:
-#         return min_threshold  # minimum threshold for average durations of 10 seconds or more
-#     elif avg_event_duration_sec <= short_cutoff:
-#         return 0.5  # Minimum threshold for average durations of 2 seconds or less
-#     else:
-#         # Linearly interpolate between 0.5 and min_threshold
-#         return 0.5 - (avg_event_duration_sec - short_cutoff) * (0.5 - min_threshold) / (long_cutoff - short_cutoff)
-
-# def calculate_average_event_duration(support_annotations, sr):
-#     """
-#     Calculate the average duration of positive events in the support annotations.
-    
-#     Args:
-#         support_annotations (torch.Tensor): Frame labels for the support set where 2 indicates a positive event.
-#         sr (int): Sample rate of the audio.
-    
-#     Returns:
-#         float: Average duration of positive events in seconds.
-#     """
-#     # Convert support annotations to numpy array for easier processing
-#     support_annotations_np = support_annotations.numpy()
-    
-#     # Find all indices where the label is 2 (positive event)
-#     positive_indices = np.where(support_annotations_np == 2)[0]
-    
-#     if len(positive_indices) == 0:
-#         return 0.0  # No positive events found
-    
-#     # Identify boundaries where the difference between consecutive positive indices is greater than 1
-#     boundaries = np.where(np.diff(positive_indices) > 1)[0]
-    
-#     # Split the positive indices into separate events
-#     event_splits = np.split(positive_indices, boundaries + 1)
-    
-#     # Calculate the durations of all events
-#     event_durations = [(event[-1] - event[0] + 1) / sr for event in event_splits]
-    
-#     # Calculate the average duration
-#     average_event_duration = np.mean(event_durations)
-    
-#     return average_event_duration
-
     
 def get_threshold(all_query_predictions, args, min_vox_dur_support, vox_durs_support):
     if args.inference_threshold is None:
@@ -308,8 +252,11 @@ def cache_support_encoded(model, support_audio, args):
     
     # pad and normalize audio
     support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-    if support_pad>0:
+    # if support_pad>0:
+    #     support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
+    while support_pad>0:
         support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
+        support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
     
     if not args.atst_frame:
         normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
@@ -342,8 +289,11 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
 
     # Pad support so we don't have empty sounds
     support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-    if support_pad>0:
+    # if support_pad>0:
+    #     support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
+    while support_pad>0:
         support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
+        support_pad = (model.audio_chunk_size_samples - (support_labels.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
 
     #NOTE: ATST has its own MinMax scaler
     if not args.atst_frame:
@@ -383,10 +333,16 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
 def get_probs(model, support_audio, support_annotations, query_audio, args):
     
     # Pad support so we don't have empty sounds
+    # support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+    # if support_pad>0:
+    #     support_audio = torch.cat((support_audio, support_audio[:support_pad]))
+    #     support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
+    
     support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-    if support_pad>0:
+    while support_pad>0:
         support_audio = torch.cat((support_audio, support_audio[:support_pad]))
         support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
+        support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
 
     # pad etc
     if args.window_inference_support:
@@ -454,7 +410,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
     else:        
         model = model.to(device)
         model.eval()
-
+        
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
         

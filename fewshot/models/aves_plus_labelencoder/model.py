@@ -167,7 +167,15 @@ class ATSTEncoder(nn.Module):
         self.args = args
     
     def forward(self, x):
+        
+        expected_dur_output = x.size(1)//self.args.scale_factor
         encoding = get_timestamp_embedding(x, self.atst)
+        pad = expected_dur_output - encoding.size(2)
+        if pad>0:
+            encoding = F.pad(encoding, (0,pad), mode='reflect')
+        
+        
+        # encoding = get_timestamp_embedding(x, self.atst)
         return encoding
     
     def freeze(self):
