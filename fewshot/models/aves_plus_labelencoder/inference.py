@@ -248,7 +248,7 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     Output
         logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
     """
-
+    
     # pad and normalize audio
     support_pad_len = (model.audio_chunk_size_samples - support_audio.size(1) % model.audio_chunk_size_samples) % model.audio_chunk_size_samples
     if support_pad_len>0:
@@ -304,6 +304,20 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
 
     return weighted_average_logits, query_labels
 
+def apply_windowing(audio, labels, chunk_size_samples):
+    audio_dur_samples = audio.size(0)
+    assert audio_dur_samples % chunk_size_samples == 0
+    assert chunk_size_samples % 2 == 0
+    
+    if audio_dur_samples>chunk_size_samples:
+        halfwindow_audio = audio[chunk_size_samples//2: -chunk_size_samples//2]
+        halfwindow_labels = labels[chunk_size_samples//2: -chunk_size_samples//2]
+        
+        audio = torch.cat((audio, halfwindow_audio))
+        labels = torch.cat((labels, halfwindow_labels))
+
+    return audio, labels
+
 def inference_dcase(model, args, audio_fp, annotations_fp):
     print(f"Inference for {audio_fp}")
     
@@ -311,7 +325,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
     
     # loading for speedup
     np_fp = os.path.join(args.experiment_dir, fn[:-4]+".npy")
-    if os.path.exists(np_fp):
+    if False: #os.path.exists(np_fp):
         audio = load_audio(audio_fp, args.sr)
         annotations = pd.read_csv(annotations_fp)
 
@@ -330,29 +344,47 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         
         # pad etc
         
-        ## loop audio at offset to provide a windowing effect
-        support_training_dur_samples = int(args.sr*args.support_dur_sec)
-        support_dur_samples = support_audio.size(0)
+#         ## loop audio at offset to provide a windowing effect
+#         support_training_dur_samples = int(args.sr*args.support_dur_sec)
+#         support_dur_samples = support_audio.size(0)
         
-        assert model.audio_chunk_size_samples % 2 == 0
-        assert support_dur_samples >= model.audio_chunk_size_samples//2
+#         assert model.audio_chunk_size_samples % 2 == 0
+#         assert support_dur_samples >= model.audio_chunk_size_samples//2
         
-        remainder = support_dur_samples % model.audio_chunk_size_samples
-        if remainder >= model.audio_chunk_size_samples//2:
-            to_cut = remainder-model.audio_chunk_size_samples//2
-        else:
-            to_cut = remainder+model.audio_chunk_size_samples//2
+#         remainder = support_dur_samples % model.audio_chunk_size_samples
+#         if remainder >= model.audio_chunk_size_samples//2:
+#             to_cut = remainder-model.audio_chunk_size_samples//2
+#         else:
+#             to_cut = remainder+model.audio_chunk_size_samples//2
                     
-        halfwindowed_audio_len = support_audio[to_cut:].size(0)
-        assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
-        support_audio = torch.cat((support_audio[to_cut:], support_audio))
-        support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
+#         halfwindowed_audio_len = support_audio[to_cut:].size(0)
+#         assert halfwindowed_audio_len % model.audio_chunk_size_samples == model.audio_chunk_size_samples//2, "incorrect windowing math!"
+#         support_audio = torch.cat((support_audio[to_cut:], support_audio))
+#         support_annotations = torch.cat((support_annotations[to_cut:], support_annotations))
         
-        # Pad out so we don't have empty sounds
+#         # Pad out so we don't have empty sounds
+#         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+#         # if support_pad>0:
+#         #     support_audio = torch.cat((support_audio, support_audio[:support_pad]))
+#         #     support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
+#         while support_pad>0:
+#             support_audio = torch.cat((support_audio, support_audio[:support_pad]))
+#             support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
+#             support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+            
+            
+        # Pad support so we don't have empty sounds
+        assert model.audio_chunk_size_samples % 2 == 0
+        
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-        if support_pad>0:
+        while support_pad>0:
             support_audio = torch.cat((support_audio, support_audio[:support_pad]))
             support_annotations = torch.cat((support_annotations, support_annotations[:support_pad]))
+            support_pad = (model.audio_chunk_size_samples - (support_audio.size(0) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
+            
+        support_audio, support_annotations = apply_windowing(support_audio, support_annotations, model.audio_chunk_size_samples)
+        
+        #
         
         # Pad query to match training length
         query_dur_samples = int(args.query_dur_sec * args.sr)
@@ -360,7 +392,7 @@ def inference_dcase(model, args, audio_fp, annotations_fp):
         if query_pad>0:
             query_audio = F.pad(query_audio, (0,query_pad))
         
-       
+        
         assert len(support_annotations) == len(support_audio)
         
         inference_dataloader = get_inference_dataloader(support_audio, support_annotations, query_audio, args)

@@ -62,8 +62,8 @@ def main(args):
     outputs = []
     print("Evaluation")
     for i, row in tqdm.tqdm(evaluation_manifest.iterrows(), total=len(evaluation_manifest)):
-        # if '/RD/' not in row['audio_fp']:
-        #     continue
+        if 'ME1' not in row['audio_fp']:
+            continue
         d = inference_dcase(model, args, row['audio_fp'], row['annotation_fp'])
         outputs.append(d)
         
