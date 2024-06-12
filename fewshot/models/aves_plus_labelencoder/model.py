@@ -238,8 +238,8 @@ class FewShotModel(nn.Module):
             support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
         
         #NOTE: ATST has its own MinMax scaler
-        if not self.args.atst_frame:
-            normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+        if True: #not self.args.atst_frame:
+            normalization_factor = torch.std(support_audio, dim=1, keepdim=True) / 0.051
             normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
             support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
             query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
