@@ -168,7 +168,7 @@ def get_threshold(all_query_predictions, args, min_vox_dur_support, vox_durs_sup
             all_query_predictions_binary = all_query_predictions >= 1 / (1 + np.exp(-threshold))
 
             # fill gaps and omit extremely short predictions
-            max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
+            max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0, 1) #np.clip(0.5*min_vox_dur_support, 0.2, 1)
             min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
 
             preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
@@ -258,8 +258,8 @@ def cache_support_encoded(model, support_audio, args):
         support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
     
-    if not args.atst_frame:
-        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+    if True: #not args.atst_frame:
+        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)/0.051
         normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
         support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
     
@@ -296,8 +296,8 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
         support_pad = (model.audio_chunk_size_samples - (support_labels.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
 
     #NOTE: ATST has its own MinMax scaler
-    if not args.atst_frame:
-        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
+    if True: #not args.atst_frame:
+        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)/0.051
         normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
         query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
 
