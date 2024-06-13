@@ -262,6 +262,7 @@ class FewshotDataset(Dataset):
         if scenario == "rate_generator":
             support_chain_start = rng.integers(0, 1+int(self.args.support_dur_sec * self.args.sr)//2)
             query_chain_start = rng.integers(0, 1+int(self.args.query_dur_sec * self.args.sr)//2)
+            rate_generator_constant = rng.uniform(1,3)
             
         
         # Load background_audio
@@ -405,18 +406,17 @@ class FewshotDataset(Dataset):
                 rms_pseudovox = torch.std(pseudovox)
                 
                 if scenario == "disjunction_snr" and (label == 2):
-                    snr_shift = rng.uniform(-5,5)
+                    snr_db = rng.uniform(-5, 2)
                 else:
-                    snr_shift = rng.uniform(-1, 1)
-                
-                snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + snr_shift
+                    snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                    
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
                 
                 if time_reverse_aug:
                     pseudovox = torch.flip(pseudovox, (0,))
                 
                 if (scenario == "rate_generator") and (label == 2):
-                    pseudovox_start = (int(ii*pseudovox.size(0)*rng.normal(1.1,0.05)) + support_chain_start) % support_dur_samples
+                    pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + support_chain_start) % support_dur_samples
                 else:
                     pseudovox_start = rng.integers(-pseudovox.size(0), support_dur_samples)
                 
@@ -464,15 +464,14 @@ class FewshotDataset(Dataset):
                                 pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
-                if (scenario == "disjunction_snr") and (label == 2):
-                    snr_shift = rng.uniform(-5,5)
+                if scenario == "disjunction_snr" and (label == 2):
+                    snr_db = rng.uniform(-5, 2)
                 else:
-                    snr_shift = rng.uniform(-1, 1)
-                snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + snr_shift
+                    snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
                 
                 if (scenario == "rate_generator") and (label == 2):
-                    pseudovox_start = (int(ii*pseudovox.size(0)*rng.normal(1.1,0.05)) + query_chain_start) % query_dur_samples
+                    pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + query_chain_start) % query_dur_samples
                 else:
                     pseudovox_start = rng.integers(-pseudovox.size(0), query_dur_samples)
                 
