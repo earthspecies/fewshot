@@ -219,7 +219,7 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
     all_query_predictions_binary = all_query_predictions >= threshold
 
     # fill gaps and omit extremely short predictions
-    max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0.2, 1)
+    max_hole_size_sec = np.clip(0.5*min_vox_dur_support, 0, 1)
     min_vox_dur_sec = min(0.5, 0.5*min_vox_dur_support)
 
     preds = fill_holes(all_query_predictions_binary, int(pred_sr*max_hole_size_sec))
@@ -248,20 +248,23 @@ def postprocess(all_query_predictions, audio_fp, args, time_shift_sec, min_vox_d
        
     return d
 
-def cache_support_encoded(model, support_audio, args):
+def cache_support_encoded(model, support_audio, support_labels, args):
     
     # pad and normalize audio
     support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
     # if support_pad>0:
     #     support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
+    
+    if args.inference_normalize_rms is not None: #not args.atst_frame:
+        normalization_factor = torch.std(support_audio)/args.inference_normalize_rms
+        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+    
     while support_pad>0:
         support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
         support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
     
-    if True: #not args.atst_frame:
-        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)/0.051
-        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-        support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+    
     
     support_len_samples = support_audio.size(1)
     support_audio_subs_encoded = []
@@ -286,20 +289,18 @@ def forward_cached(model, support_audio, support_audio_encoded, start_samples, s
     Output
         logits (Tensor): (batch, query_time/scale_factor) (at audio_sr / scale factor)
     """
+    
+    #NOTE: ATST has its own MinMax scaler
+    if args.inference_normalize_rms is not None: #not args.atst_frame:
+        normalization_factor = torch.std(support_audio)/args.inference_normalize_rms
+        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
 
     # Pad support so we don't have empty sounds
     support_pad = (model.audio_chunk_size_samples - (support_audio.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-    # if support_pad>0:
-    #     support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
     while support_pad>0:
         support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
         support_pad = (model.audio_chunk_size_samples - (support_labels.size(1) % model.audio_chunk_size_samples)) % model.audio_chunk_size_samples
-
-    #NOTE: ATST has its own MinMax scaler
-    if True: #not args.atst_frame:
-        normalization_factor = torch.std(support_audio, dim=1, keepdim=True)/0.051
-        normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-        query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
 
     # encode audio and labels
     query_logits = []
@@ -368,7 +369,7 @@ def get_probs(model, support_audio, support_annotations, query_audio, args):
             sa = sa.to(device)
 
             if cached_support_encoded is None:
-                cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device), args)
+                cached_support_encoded, start_samples = cache_support_encoded(model, sa.to(device), sl.to(device), args)
 
             query_predictions = forward_cached(model, sa.to(device), cached_support_encoded, start_samples, sl.to(device), qa.to(device), args)
             all_query_predictions.append(query_predictions)
