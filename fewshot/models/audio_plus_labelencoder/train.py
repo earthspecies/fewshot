@@ -18,10 +18,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from fewshot.models.aves_plus_labelencoder.model import FewShotModel
-from fewshot.models.aves_plus_labelencoder.params import parse_args, save_params
+from fewshot.models.audio_plus_labelencoder.model import FewShotModel
+from fewshot.models.audio_plus_labelencoder.params import parse_args, save_params
 from fewshot.data.data import FewshotDataset, get_dataloader, get_dataloader_distributed
-from fewshot.models.aves_plus_labelencoder.inference import inference_dcase
+from fewshot.models.audio_plus_labelencoder.inference import inference_dcase
 from fewshot.dcase_evaluation.evaluation import evaluate as evaluate_dcase
 
 torch.backends.cuda.matmul.allow_tf32 = True

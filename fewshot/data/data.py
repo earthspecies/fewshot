@@ -544,13 +544,13 @@ class InferenceDataset(Dataset):
     def __len__(self):
         return 1 + (self.query_audio.size(0) - self.query_dur_samples) // self.hop_samples
     
-def get_inference_dataloader(support_audio, support_labels, query_audio, args):
+def get_inference_dataloader(support_audio, support_labels, query_audio, args, batch_size=8, num_workers=12):
     dataset = InferenceDataset(support_audio, support_labels, query_audio, args)
     
     inference_dataloader = DataLoader(dataset,
-                                      batch_size=args.batch_size,
+                                      batch_size=batch_size,
                                       shuffle=False,
-                                      num_workers=args.num_workers,
+                                      num_workers=num_workers,
                                       pin_memory=True,
                                       drop_last=False,
                                      )
