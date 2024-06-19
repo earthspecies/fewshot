@@ -18,10 +18,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from fewshot.models.aves_plus_labelencoder.model import FewShotModel
-from fewshot.models.aves_plus_labelencoder.params import parse_args, save_params
+from fewshot.models.audio_plus_labelencoder.model import FewShotModel
+from fewshot.models.audio_plus_labelencoder.params import parse_args, save_params
 from fewshot.data.data import FewshotDataset, get_dataloader, get_dataloader_distributed
-from fewshot.models.aves_plus_labelencoder.inference import inference_dcase
+from fewshot.models.audio_plus_labelencoder.inference import inference_dcase
 from fewshot.dcase_evaluation.evaluation import evaluate as evaluate_dcase
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -74,7 +74,7 @@ def main(args):
     outputs = []
     print("Evaluation")
     for i, row in tqdm.tqdm(evaluation_manifest.iterrows(), total=len(evaluation_manifest)):
-        # if "pw15" not in row['audio_fp']: # quick
+        # if "ME1" not in row['audio_fp']: # quick
         #     continue
         d = inference_dcase(model, args, row['audio_fp'], row['annotation_fp'])
         outputs.append(d)
@@ -92,7 +92,8 @@ def get_loss_fn(args):
         query_labels = torch.flatten(query_labels)
         
         query_binary = torch.minimum(query_labels, torch.ones_like(query_labels))  # 2->1
-        loss = F.binary_cross_entropy_with_logits(logits, query_binary) #sigmoid_focal_loss(logits, query_binary)  
+        # loss = F.binary_cross_entropy_with_logits(logits, query_binary) 
+        loss = sigmoid_focal_loss(logits, query_binary)  
         unknown_mask = query_labels != 1
         loss = loss * unknown_mask  # set loss of unknowns to 0
         loss = torch.mean(loss)

@@ -10,49 +10,49 @@ from torchaudio.models import wav2vec2_model
 import json
 from x_transformers import ContinuousTransformerWrapper, Encoder
 
-from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
-from fewshot.models.aves_plus_labelencoder.frame_atst import get_timestamp_embedding, load_model
+# from fewshot.models.audio_llms.htsat.model import HTSATConfig, create_htsat_model
+from fewshot.models.audio_plus_labelencoder.frame_atst import get_timestamp_embedding, load_model
 
 ADD_LABEL_EMBEDDING = True
 
-class AvesEmbedding(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+# class AvesEmbedding(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # reference: https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/utils/import_fairseq.html
-        # config = self.load_config(args.aves_config_fp)
-        # self.model = wav2vec2_model(**config, aux_num_out=None)
-        # state_dict = torch.hub.load_state_dict_from_url(args.aves_url, map_location=device)
-        # self.model.load_state_dict(state_dict)
-        # self.model.feature_extractor.requires_grad_(False)
+#         # reference: https://pytorch.org/audio/stable/_modules/torchaudio/models/wav2vec2/utils/import_fairseq.html
+#         # config = self.load_config(args.aves_config_fp)
+#         # self.model = wav2vec2_model(**config, aux_num_out=None)
+#         # state_dict = torch.hub.load_state_dict_from_url(args.aves_url, map_location=device)
+#         # self.model.load_state_dict(state_dict)
+#         # self.model.feature_extractor.requires_grad_(False)
         
-        bundle = torchaudio.pipelines.WAV2VEC2_BASE
-        self.model = bundle.get_model()
+#         bundle = torchaudio.pipelines.WAV2VEC2_BASE
+#         self.model = bundle.get_model()
         
-        self.sr=args.sr
+#         self.sr=args.sr
 
-    def load_config(self, config_path):
-        with open(config_path, 'r') as ff:
-            obj = json.load(ff)
+#     def load_config(self, config_path):
+#         with open(config_path, 'r') as ff:
+#             obj = json.load(ff)
 
-        return obj
+#         return obj
 
-    def forward(self, sig):
-        # extract_feature in the torchaudio version will output all 12 layers' output, -1 to select the final one
-        out = self.model.extract_features(sig)[0][-1]
+#     def forward(self, sig):
+#         # extract_feature in the torchaudio version will output all 12 layers' output, -1 to select the final one
+#         out = self.model.extract_features(sig)[0][-1]
 
-        return out
+#         return out
       
-    def freeze(self):
-        for param in self.model.encoder.parameters():
-            param.requires_grad = False
-        self.model.feature_extractor.requires_grad_(False)
+#     def freeze(self):
+#         for param in self.model.encoder.parameters():
+#             param.requires_grad = False
+#         self.model.feature_extractor.requires_grad_(False)
 
-    def unfreeze(self):
-        for param in self.model.encoder.parameters():
-            param.requires_grad = True
-        self.model.feature_extractor.requires_grad_(True)
+#     def unfreeze(self):
+#         for param in self.model.encoder.parameters():
+#             param.requires_grad = True
+#         self.model.feature_extractor.requires_grad_(True)
         
 class LabelEncoder(nn.Module):
     def __init__(self, args):
@@ -120,44 +120,44 @@ class LabelEncoder(nn.Module):
         
         return  logits, confidences # each output: (batch, query_time/scale_factor). 
         
-class AvesEncoder(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        self.aves_embedding = AvesEmbedding(args)
-        self.args = args
+# class AvesEncoder(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         self.aves_embedding = AvesEmbedding(args)
+#         self.args = args
 
-    def forward(self, x):
-        """
-        Input
-            x (Tensor): (batch, time) (time at 16000 Hz, audio_sr)
-        Returns
-            x_encoded (Tensor): (batch, embedding_dim, time) (time at 50 Hz, aves_sr)
-        """
+#     def forward(self, x):
+#         """
+#         Input
+#             x (Tensor): (batch, time) (time at 16000 Hz, audio_sr)
+#         Returns
+#             x_encoded (Tensor): (batch, embedding_dim, time) (time at 50 Hz, aves_sr)
+#         """
 
-        # chunk long audio into smaller pieces
-        # maybe better to do via a reshape? there is some tradeoff here
-        x_encoded = []
+#         # chunk long audio into smaller pieces
+#         # maybe better to do via a reshape? there is some tradeoff here
+#         x_encoded = []
         
-        if x.size(1) % self.args.scale_factor != 0:
-            raise Exception("audio length is not divisible by scale factor")
+#         if x.size(1) % self.args.scale_factor != 0:
+#             raise Exception("audio length is not divisible by scale factor")
             
-        expected_dur_output = x.size(1)//self.args.scale_factor
+#         expected_dur_output = x.size(1)//self.args.scale_factor
         
-        feats = self.aves_embedding(x)
-        feats = rearrange(feats, 'b t c -> b c t')
+#         feats = self.aves_embedding(x)
+#         feats = rearrange(feats, 'b t c -> b c t')
 
-        #embedding may be off by 1 sample from expected
-        pad = expected_dur_output - feats.size(2)
-        if pad>0:
-            feats = F.pad(feats, (0,pad), mode='reflect')
+#         #embedding may be off by 1 sample from expected
+#         pad = expected_dur_output - feats.size(2)
+#         if pad>0:
+#             feats = F.pad(feats, (0,pad), mode='reflect')
             
-        return feats
+#         return feats
 
-    def freeze(self):
-        self.aves_embedding.freeze()
+#     def freeze(self):
+#         self.aves_embedding.freeze()
           
-    def unfreeze(self):
-        self.aves_embedding.unfreeze()
+#     def unfreeze(self):
+#         self.aves_embedding.unfreeze()
 
 class ATSTEncoder(nn.Module):
     def __init__(self, args):
@@ -167,7 +167,15 @@ class ATSTEncoder(nn.Module):
         self.args = args
     
     def forward(self, x):
+        
+        expected_dur_output = x.size(1)//self.args.scale_factor
         encoding = get_timestamp_embedding(x, self.atst)
+        pad = expected_dur_output - encoding.size(2)
+        if pad>0:
+            encoding = F.pad(encoding, (0,pad), mode='reflect')
+        
+        
+        # encoding = get_timestamp_embedding(x, self.atst)
         return encoding
     
     def freeze(self):
@@ -181,10 +189,11 @@ class FewShotModel(nn.Module):
         super().__init__()
         self.args = args
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        if self.args.atst_frame:
-            self.audio_encoder = ATSTEncoder(args)
-        else:
-            self.audio_encoder = AvesEncoder(args)
+        self.audio_encoder = ATSTEncoder(args)
+        # if self.args.atst_frame:
+        #     self.audio_encoder = ATSTEncoder(args)
+        # else:
+        #     self.audio_encoder = AvesEncoder(args)
 
         self.label_encoder = LabelEncoder(args)
         self.audio_chunk_size_samples = int(args.sr * args.audio_chunk_size_sec)
@@ -229,12 +238,12 @@ class FewShotModel(nn.Module):
             support_audio = torch.cat((support_audio, support_audio[:,:support_pad]), dim=1)
             support_labels = torch.cat((support_labels, support_labels[:,:support_pad]), dim=1)
         
-        #NOTE: ATST has its own MinMax scaler
-        if not self.args.atst_frame:
-            normalization_factor = torch.std(support_audio, dim=1, keepdim=True)
-            normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
-            support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
-            query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
+        # #NOTE: ATST has its own MinMax scaler
+        # if False:
+        #     normalization_factor = torch.std(support_audio, dim=1, keepdim=True) / 0.005
+        #     normalization_factor = torch.maximum(normalization_factor, torch.full_like(normalization_factor, 1e-6))
+        #     support_audio = (support_audio - torch.mean(support_audio, dim=1,keepdim=True)) / normalization_factor
+        #     query_audio = (query_audio - torch.mean(query_audio, dim=1,keepdim=True)) / normalization_factor
         
         # encode audio and labels
         query_logits = []

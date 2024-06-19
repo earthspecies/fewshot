@@ -5,17 +5,17 @@ from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import torch
 import torchaudio
 
-SCENARIO_WEIGHTS = {
-    "normal": 1,
-    "fine_grained_general": .75,
-    "low_snr": 0.75,
-    "disjunction_within_species": 0.5,
-    "generalization_within_species": 0.5,
-    "fine_grained_snr": 0.5,
-    "disjunction_cross_species": 0.25,
-    "fine_grained_pitch": 0.25,
-    "fine_grained_duration": 0.25
-}
+# SCENARIO_WEIGHTS = {
+#     "normal": 1,
+#     "fine_grained_general": 1,
+#     "low_snr": 1,
+#     "disjunction_within_species": 1,
+#     "generalization_within_species": 1,
+#     "fine_grained_snr": 1,
+#     "disjunction_cross_species": 0.25,
+#     "fine_grained_pitch": 0.25,
+#     "fine_grained_duration": 0.25
+# }
 
 def load_audio(fp, target_sr):
     audio, file_sr = torchaudio.load(fp)
@@ -92,8 +92,8 @@ class FewshotDataset(Dataset):
         
         # Init resamplers
         self.resamplers = {}
-        self.resamplers[(args.sr, args.sr//2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr//2)
-        self.resamplers[(args.sr, args.sr*2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr*2)
+        for t in [3,2,1.7,1.2,.9,.7,.5,.3]:
+            self.resamplers[(args.sr, int(args.sr*t))] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=int(args.sr*t))
 
         self.audio_chunk_size_samples = int(self.args.audio_chunk_size_sec * self.args.sr)
         
@@ -121,8 +121,8 @@ class FewshotDataset(Dataset):
         ## choose all randomness
         
         # Special scenario
-        total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
-        scenario = rng.choice(self.scenarios, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
+        # total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
+        scenario = rng.choice(self.scenarios)#, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
         
         # Background
             
@@ -140,13 +140,13 @@ class FewshotDataset(Dataset):
         
         # Support background
         support_background_fp = background_fps[0]
-        support_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
+        support_background_resample = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
         
         # Query background
         background_audio_query_domain_shift = rng.binomial(1, 0.5)
         
         if background_audio_query_domain_shift:
-            query_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
+            query_background_resample = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
             query_background_fp = background_fps[1]
         else:
             query_background_resample = support_background_resample
@@ -157,7 +157,6 @@ class FewshotDataset(Dataset):
         coarse_clusters_present = pseudovox_from_here["birdnet_prediction"].unique()
         coarse_clusters_allowed = self.coarse_clusters_with_enough_examples[~self.coarse_clusters_with_enough_examples.isin(coarse_clusters_present)]
         
-        
         if len(coarse_clusters_allowed) < 3:
             # corner case which probably never occurs: one background track contains almost every possible type of sound
             coarse_clusters_allowed = self.coarse_clusters_with_enough_examples
@@ -165,9 +164,9 @@ class FewshotDataset(Dataset):
         coarse_clusters_to_possibly_include = list(coarse_clusters_allowed.sample(4, random_state=index))
         
         # Focal calls
-        focal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
+        focal_rate = rng.choice([5/120, 5/80, 5/60, 5/30, 5/22, 5/15])
         focal_pitch = None # don't pitch shift unless in fine-grained scenario
-        focal_duration = rng.choice(["long", "same", "short"])
+        focal_duration = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["long", "same", "short"])
         focal_snr = rng.uniform(-5, 2)
         coarse_focal_c = coarse_clusters_to_possibly_include[2]
         focal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_focal_c]["fp_plus_prediction"].sample(1, random_state=index))[0]
@@ -175,6 +174,7 @@ class FewshotDataset(Dataset):
         other_focal_c = focal_c # placeholder
         
         if (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
+            # deprecated
             focal_pitch = rng.choice(["up", "same", "down"])
         
         if scenario == "low_snr":
@@ -196,9 +196,9 @@ class FewshotDataset(Dataset):
             generalization_df = self.pseudovox_info[(self.pseudovox_info["birdnet_prediction"] == coarse_focal_c) & (self.pseudovox_info["duration_sec"] >= 0.75*dur_min_sampled) & (self.pseudovox_info["duration_sec"] <= 1.25*dur_max_sampled)]
                     
         # Nonfocal calls
-        nonfocal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
+        nonfocal_rate = rng.choice([5/120, 5/80, 5/60, 5/30, 5/22, 5/15])
         nonfocal_pitch = None
-        nonfocal_duration = rng.choice(["long", "same", "short"])
+        nonfocal_duration = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["long", "same", "short"])
         nonfocal_snr = rng.uniform(-10, 2)
         nonfocal_time_reverse = rng.binomial(1, 0.2)
         
@@ -258,12 +258,18 @@ class FewshotDataset(Dataset):
             if len(similar_sounds_df)>0:
                 coarse_nonfocal_c = list(similar_sounds_df["birdnet_prediction"].sample(1, random_state=index))[0]
                 nonfocal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_nonfocal_c]["fp_plus_prediction"].sample(1, random_state=index))[0]
+                
+        if scenario == "rate_generator":
+            support_chain_start = rng.integers(0, 1+int(self.args.support_dur_sec * self.args.sr)//2)
+            query_chain_start = rng.integers(0, 1+int(self.args.query_dur_sec * self.args.sr)//2)
+            rate_generator_constant = rng.uniform(1,3)
+            
         
         # Load background_audio
         
-        r = {"upsample" : int(2*self.args.sr), "same" : self.args.sr, "downsample" : int(0.5*self.args.sr)}
-        audio_support = self.load_audio(support_background_fp, r[support_background_resample])
-        audio_query = self.load_audio(query_background_fp, r[query_background_resample])
+        # r = {"upsample" : int(2*self.args.sr), "same" : self.args.sr, "downsample" : int(0.5*self.args.sr)}
+        audio_support = self.load_audio(support_background_fp, int(self.args.sr * support_background_resample))
+        audio_query = self.load_audio(query_background_fp, int(self.args.sr * query_background_resample))
                     
         # loop and trim background audio to desired length
         
@@ -332,9 +338,13 @@ class FewshotDataset(Dataset):
                 # if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
                 #     n_pseudovox_support = max(n_pseudovox_support, 1)
                     
-                # Increase rate in query to reduce number of empty examples
-                floor_query = rng.choice([0,1],p=[.75, .25])
-                n_pseudovox_query = max(n_pseudovox_query, floor_query)
+                # Change rate in query
+                if focal_rate >=  5/30:
+                    ceil_query = rng.choice([n_pseudovox_query//4,0],p=[.75, .25])
+                    n_pseudovox_query = min(n_pseudovox_query, ceil_query)
+                else:
+                    floor_query = rng.choice([0,1],p=[.75, .25])
+                    n_pseudovox_query = max(n_pseudovox_query, floor_query)
                 
             if label == 0:
                 if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration") or (scenario == "fine_grained_general"):
@@ -363,13 +373,14 @@ class FewshotDataset(Dataset):
                 pseudovox_support = possible_pseudovox.sample(n=n_pseudovox_support, replace=True, random_state=index)
             
             # load the pseudovox and insert them
+            ii=0
             for _, row in pseudovox_support.iterrows():
                 
                 dur_aug = {2: focal_duration, 0: nonfocal_duration}[label]
                 pitch_aug = {2: focal_pitch, 0: nonfocal_pitch}[label]
                 time_reverse_aug = {2:focal_time_reverse, 0:nonfocal_time_reverse}[label]
                 
-                speed_adjust_rate = {"long" : int(2*self.args.sr), "same" : self.args.sr, "short" : int(0.5*self.args.sr)}[dur_aug]
+                speed_adjust_rate = int(dur_aug*self.args.sr) #{"long" : int(2*self.args.sr), "same" : self.args.sr, "short" : int(0.5*self.args.sr)}[dur_aug]
                 pseudovox = self.load_audio(row['pseudovox_audio_fp'], speed_adjust_rate)
                 
                 if pitch_aug is not None:
@@ -393,13 +404,21 @@ class FewshotDataset(Dataset):
                                 pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
-                snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                
+                if scenario == "disjunction_snr" and (label == 2):
+                    snr_db = rng.uniform(-5, 2)
+                else:
+                    snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                    
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
                 
                 if time_reverse_aug:
                     pseudovox = torch.flip(pseudovox, (0,))
-
-                pseudovox_start = rng.integers(-pseudovox.size(0), support_dur_samples)
+                
+                if (scenario == "rate_generator") and (label == 2):
+                    pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + support_chain_start) % support_dur_samples
+                else:
+                    pseudovox_start = rng.integers(-pseudovox.size(0), support_dur_samples)
                 
                 if pseudovox_start < 0:
                     # corner case: pseudovox is cut off by beginning of clip
@@ -414,12 +433,14 @@ class FewshotDataset(Dataset):
                 support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
 
                 pseudovox_end = min(pseudovox_start + pseudovox.size(0), support_dur_samples)
-
+                ii += 1
+            
+            ii = 0
             for _, row in pseudovox_query.iterrows():
                 dur_aug = {2: focal_duration, 0: nonfocal_duration}[label]
                 pitch_aug = {2: focal_pitch, 0: nonfocal_pitch}[label]
                 
-                speed_adjust_rate = {"long" : int(2*self.args.sr), "same" : self.args.sr, "short": int(0.5*self.args.sr)}[dur_aug]
+                speed_adjust_rate = int(dur_aug*self.args.sr) #{"long" : int(2*self.args.sr), "same" : self.args.sr, "short": int(0.5*self.args.sr)}[dur_aug]
                 pseudovox = self.load_audio(row['pseudovox_audio_fp'], speed_adjust_rate)
                 
                 if pitch_aug is not None:
@@ -443,10 +464,16 @@ class FewshotDataset(Dataset):
                                 pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
-                snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                if scenario == "disjunction_snr" and (label == 2):
+                    snr_db = rng.uniform(-5, 2)
+                else:
+                    snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
-
-                pseudovox_start = rng.integers(-pseudovox.size(0), query_dur_samples)
+                
+                if (scenario == "rate_generator") and (label == 2):
+                    pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + query_chain_start) % query_dur_samples
+                else:
+                    pseudovox_start = rng.integers(-pseudovox.size(0), query_dur_samples)
                 
                 if pseudovox_start < 0:
                     # corner case: pseudovox is cut off by beginning of clip
@@ -459,6 +486,7 @@ class FewshotDataset(Dataset):
                 
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
+                ii+=1
 
         if self.args.window_train_support:
             audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
@@ -516,13 +544,13 @@ class InferenceDataset(Dataset):
     def __len__(self):
         return 1 + (self.query_audio.size(0) - self.query_dur_samples) // self.hop_samples
     
-def get_inference_dataloader(support_audio, support_labels, query_audio, args):
+def get_inference_dataloader(support_audio, support_labels, query_audio, args, batch_size=8, num_workers=12):
     dataset = InferenceDataset(support_audio, support_labels, query_audio, args)
     
     inference_dataloader = DataLoader(dataset,
-                                      batch_size=args.batch_size,
+                                      batch_size=batch_size,
                                       shuffle=False,
-                                      num_workers=args.num_workers,
+                                      num_workers=num_workers,
                                       pin_memory=True,
                                       drop_last=False,
                                      )
@@ -564,7 +592,7 @@ if __name__ == "__main__":
     parser.add_argument('--min-cluster-size-for-longish-pseudovox', type = int, default=2, help = "the min cluster size when a pseudovox is >=1 sec long, we allow this because there aren't that many of them")
     parser.add_argument('--nonbio-min-cluster-size', type = int, default=4, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
-    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
+    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
     parser.add_argument('--window-train-support', action='store_true', help="whether to apply windowing to support audio during training")
     
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
