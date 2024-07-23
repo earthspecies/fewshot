@@ -1,14 +1,27 @@
 import os
 import numpy as np
 import pandas as pd
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import torch
 import torchaudio
+
+# SCENARIO_WEIGHTS = {
+#     "normal": 1,
+#     "fine_grained_general": 1,
+#     "low_snr": 1,
+#     "disjunction_within_species": 1,
+#     "generalization_within_species": 1,
+#     "fine_grained_snr": 1,
+#     "disjunction_cross_species": 0.25,
+#     "fine_grained_pitch": 0.25,
+#     "fine_grained_duration": 0.25
+# }
 
 def load_audio(fp, target_sr):
     audio, file_sr = torchaudio.load(fp)
     
     if file_sr != target_sr:
+        print("resampling", fp, file_sr, target_sr)
         audio = torchaudio.functional.resample(audio, file_sr, target_sr)
     
     # correct DC offset
@@ -19,6 +32,21 @@ def load_audio(fp, target_sr):
         audio = torch.mean(audio, dim=0)
     
     return audio
+
+def apply_windowing(audio, labels, chunk_size_samples):
+    audio_dur_samples = audio.size(0)
+    assert audio_dur_samples % chunk_size_samples == 0
+    assert chunk_size_samples % 2 == 0
+    
+    if audio_dur_samples>chunk_size_samples:
+        halfwindow_audio = audio[chunk_size_samples//2: -chunk_size_samples//2]
+        halfwindow_labels = labels[chunk_size_samples//2: -chunk_size_samples//2]
+        
+        audio = torch.cat((audio, halfwindow_audio))
+        labels = torch.cat((labels, halfwindow_labels))
+
+    return audio, labels
+
 
 class FewshotDataset(Dataset):
     def __init__(self, args):
@@ -59,12 +87,15 @@ class FewshotDataset(Dataset):
         self.shift_up2 = torchaudio.transforms.PitchShift(16000, 24, hop_length=64)
         self.shift_down = torchaudio.transforms.PitchShift(16000, -12, hop_length=64)
         self.shift_down2 = torchaudio.transforms.PitchShift(16000, -24, hop_length=64)
+
         self.scenarios = self.args.scenarios.split(',')
         
         # Init resamplers
         self.resamplers = {}
-        self.resamplers[(args.sr, args.sr//2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr//2)
-        self.resamplers[(args.sr, args.sr*2)] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=args.sr*2)
+        for t in [3,2,1.7,1.2,.9,.7,.5,.3]:
+            self.resamplers[(args.sr, int(args.sr*t))] = torchaudio.transforms.Resample(orig_freq=args.sr, new_freq=int(args.sr*t))
+
+        self.audio_chunk_size_samples = int(self.args.audio_chunk_size_sec * self.args.sr)
         
     def load_audio(self, fp, target_sr):
         audio, file_sr = torchaudio.load(fp)
@@ -90,13 +121,8 @@ class FewshotDataset(Dataset):
         ## choose all randomness
         
         # Special scenario
-        
-        
-        scenario = rng.choice(self.scenarios)
-            
-        # ["normal", "disjunction_cross_species", "disjunction_within_species", "generalization_within_species", "low_snr", "fine_grained_snr", "fine_grained_pitch", "fine_grained_duration"], p = [0.2, 0.1, 0.2, 0.2, 0.2, 0.1, 0, 0])
-                
-        copy_support = 0 #rng.binomial(1, 0.01)
+        # total_weight = sum([SCENARIO_WEIGHTS[s] for s in self.scenarios])
+        scenario = rng.choice(self.scenarios)#, p=[SCENARIO_WEIGHTS[s] / total_weight for s in self.scenarios])
         
         # Background
             
@@ -114,20 +140,20 @@ class FewshotDataset(Dataset):
         
         # Support background
         support_background_fp = background_fps[0]
-        support_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.25, 0.5, 0.25])
+        support_background_resample = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
         
         # Query background
         background_audio_query_domain_shift = rng.binomial(1, 0.5)
         
         if background_audio_query_domain_shift:
-            query_background_resample = rng.choice(["upsample", "same", "downsample"], p = [0.25, 0.5, 0.25])
+            query_background_resample = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["upsample", "same", "downsample"], p = [0.2, 0.4, 0.4])
             query_background_fp = background_fps[1]
         else:
             query_background_resample = support_background_resample
             query_background_fp = background_fps[0]
         
         # prepare which pseudovox to choose from, for adding to background audio
-        pseudovox_from_here = self.pseudovox_info[self.pseudovox_info['raw_audio_fp'].isin(background_fps)]
+        pseudovox_from_here = self.pseudovox_info[self.pseudovox_info['raw_audio_fp'].isin(background_fps)] #NOTE: filtered based on both backgrounds but sometimes only one is used
         coarse_clusters_present = pseudovox_from_here["birdnet_prediction"].unique()
         coarse_clusters_allowed = self.coarse_clusters_with_enough_examples[~self.coarse_clusters_with_enough_examples.isin(coarse_clusters_present)]
         
@@ -138,9 +164,9 @@ class FewshotDataset(Dataset):
         coarse_clusters_to_possibly_include = list(coarse_clusters_allowed.sample(4, random_state=index))
         
         # Focal calls
-        focal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
+        focal_rate = rng.choice([5/120, 5/80, 5/60, 5/30, 5/22, 5/15])
         focal_pitch = None # don't pitch shift unless in fine-grained scenario
-        focal_duration = rng.choice(["long", "same", "short"])
+        focal_duration = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["long", "same", "short"])
         focal_snr = rng.uniform(-5, 2)
         coarse_focal_c = coarse_clusters_to_possibly_include[2]
         focal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_focal_c]["fp_plus_prediction"].sample(1, random_state=index))[0]
@@ -148,6 +174,7 @@ class FewshotDataset(Dataset):
         other_focal_c = focal_c # placeholder
         
         if (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
+            # deprecated
             focal_pitch = rng.choice(["up", "same", "down"])
         
         if scenario == "low_snr":
@@ -169,9 +196,9 @@ class FewshotDataset(Dataset):
             generalization_df = self.pseudovox_info[(self.pseudovox_info["birdnet_prediction"] == coarse_focal_c) & (self.pseudovox_info["duration_sec"] >= 0.75*dur_min_sampled) & (self.pseudovox_info["duration_sec"] <= 1.25*dur_max_sampled)]
                     
         # Nonfocal calls
-        nonfocal_rate = rng.choice([5/120, 5/60, 5/30, 5/15])
+        nonfocal_rate = rng.choice([5/120, 5/80, 5/60, 5/30, 5/22, 5/15])
         nonfocal_pitch = None
-        nonfocal_duration = rng.choice(["long", "same", "short"])
+        nonfocal_duration = rng.choice([3,2,1.7,1.2,1,1,.9,.7,.5,.3]) #rng.choice(["long", "same", "short"])
         nonfocal_snr = rng.uniform(-10, 2)
         nonfocal_time_reverse = rng.binomial(1, 0.2)
         
@@ -214,17 +241,52 @@ class FewshotDataset(Dataset):
             nonfocal_c = focal_c
             use_nonbio_as_nonfocal = False # overwrite
             nonfocal_time_reverse = focal_time_reverse
+            
+        if scenario == "fine_grained_general":
+            nonfocal_rate = focal_rate
+            nonfocal_pitch = focal_pitch
+            nonfocal_duration = focal_duration
+            nonfocal_snr = focal_snr
+            use_nonbio_as_nonfocal = False # overwrite
+            nonfocal_time_reverse = focal_time_reverse
+            
+            # look for sounds of similar duration
+            focal_c_df = self.pseudovox_info[self.pseudovox_info["fp_plus_prediction"] == focal_c]
+            dur_min_sampled = focal_c_df['duration_sec'].min()
+            dur_max_sampled = focal_c_df['duration_sec'].min()
+            similar_sounds_df = self.pseudovox_info[(self.pseudovox_info["birdnet_prediction"] != coarse_focal_c) & (self.pseudovox_info["duration_sec"] >= 0.75*dur_min_sampled) & (self.pseudovox_info["duration_sec"] <= 1.25*dur_max_sampled)]
+            if len(similar_sounds_df)>0:
+                coarse_nonfocal_c = list(similar_sounds_df["birdnet_prediction"].sample(1, random_state=index))[0]
+                nonfocal_c = list(self.pseudovox_info[self.pseudovox_info["birdnet_prediction"] == coarse_nonfocal_c]["fp_plus_prediction"].sample(1, random_state=index))[0]
+                
+        if scenario == "rate_generator":
+            support_chain_start = rng.integers(0, 1+int(self.args.support_dur_sec * self.args.sr)//2)
+            query_chain_start = rng.integers(0, 1+int(self.args.query_dur_sec * self.args.sr)//2)
+            rate_generator_constant = rng.uniform(1,3)
+            
         
         # Load background_audio
         
-        r = {"upsample" : int(2*self.args.sr), "same" : self.args.sr, "downsample" : int(0.5*self.args.sr)}
-        audio_support = self.load_audio(support_background_fp, r[support_background_resample])
-        audio_query = self.load_audio(query_background_fp, r[query_background_resample])
+        # r = {"upsample" : int(2*self.args.sr), "same" : self.args.sr, "downsample" : int(0.5*self.args.sr)}
+        audio_support = self.load_audio(support_background_fp, int(self.args.sr * support_background_resample))
+        audio_query = self.load_audio(query_background_fp, int(self.args.sr * query_background_resample))
                     
         # loop and trim background audio to desired length
         
         support_dur_samples = int(self.args.support_dur_sec * self.args.sr)
         query_dur_samples = int(self.args.query_dur_sec * self.args.sr)
+
+        # Re-stitch the support background audio to match inference
+        restitch_support = rng.binomial(1, 0.1)
+        if restitch_support:
+            num_stitch_chunks = rng.integers(2, 5)
+            gap_size_samples = 100
+            min_length = support_dur_samples + num_stitch_chunks * gap_size_samples
+            
+            if audio_support.size(0) >= min_length:
+                chunk_size = (support_dur_samples - gap_size_samples * (num_stitch_chunks - 1)) // num_stitch_chunks
+                chunks = [audio_support[i*chunk_size + i*gap_size_samples : (i+1)*chunk_size + i*gap_size_samples] for i in range(num_stitch_chunks)]
+                audio_support = torch.cat(chunks, dim=0)
         
         if audio_support.size(0) <= support_dur_samples:
             # corner case: support soundscape is not long enough. in this case, tile it to make it long enough
@@ -271,14 +333,22 @@ class FewshotDataset(Dataset):
             n_pseudovox_query = rng.poisson(pseudovox_rate*self.args.query_dur_sec)
             
             if label == 2:
-                # Require minimum 2 focal call in support
+                # Require minimum 1 focal call in support
                 n_pseudovox_support = max(n_pseudovox_support, 1)
-                if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
-                    n_pseudovox_support = max(n_pseudovox_support, 2)
+                # if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
+                #     n_pseudovox_support = max(n_pseudovox_support, 1)
+                    
+                # Change rate in query
+                if focal_rate >=  5/30:
+                    ceil_query = rng.choice([n_pseudovox_query//4,0],p=[.75, .25])
+                    n_pseudovox_query = min(n_pseudovox_query, ceil_query)
+                else:
+                    floor_query = rng.choice([0,1],p=[.75, .25])
+                    n_pseudovox_query = max(n_pseudovox_query, floor_query)
                 
             if label == 0:
-                if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration"):
-                    n_pseudovox_support = max(n_pseudovox_support, 2)
+                if (scenario == "fine_grained_snr") or (scenario == "fine_grained_pitch") or (scenario == "fine_grained_duration") or (scenario == "fine_grained_general"):
+                    n_pseudovox_support = max(n_pseudovox_support, 1)
             
             # get the exact pseudovox to insert
             c = {2.1: other_focal_c, 2: focal_c, 0:nonfocal_c}[s]
@@ -303,13 +373,14 @@ class FewshotDataset(Dataset):
                 pseudovox_support = possible_pseudovox.sample(n=n_pseudovox_support, replace=True, random_state=index)
             
             # load the pseudovox and insert them
+            ii=0
             for _, row in pseudovox_support.iterrows():
                 
                 dur_aug = {2: focal_duration, 0: nonfocal_duration}[label]
                 pitch_aug = {2: focal_pitch, 0: nonfocal_pitch}[label]
                 time_reverse_aug = {2:focal_time_reverse, 0:nonfocal_time_reverse}[label]
                 
-                speed_adjust_rate = {"long" : int(2*self.args.sr), "same" : self.args.sr, "short" : int(0.5*self.args.sr)}[dur_aug]
+                speed_adjust_rate = int(dur_aug*self.args.sr) #{"long" : int(2*self.args.sr), "same" : self.args.sr, "short" : int(0.5*self.args.sr)}[dur_aug]
                 pseudovox = self.load_audio(row['pseudovox_audio_fp'], speed_adjust_rate)
                 
                 if pitch_aug is not None:
@@ -333,13 +404,21 @@ class FewshotDataset(Dataset):
                                 pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
-                snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                
+                if scenario == "disjunction_snr" and (label == 2):
+                    snr_db = rng.uniform(-5, 2)
+                else:
+                    snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                    
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
                 
                 if time_reverse_aug:
                     pseudovox = torch.flip(pseudovox, (0,))
-
-                pseudovox_start = rng.integers(-pseudovox.size(0), support_dur_samples)
+                
+                if (scenario == "rate_generator") and (label == 2):
+                    pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + support_chain_start) % support_dur_samples
+                else:
+                    pseudovox_start = rng.integers(-pseudovox.size(0), support_dur_samples)
                 
                 if pseudovox_start < 0:
                     # corner case: pseudovox is cut off by beginning of clip
@@ -354,12 +433,14 @@ class FewshotDataset(Dataset):
                 support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(support_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
 
                 pseudovox_end = min(pseudovox_start + pseudovox.size(0), support_dur_samples)
-
+                ii += 1
+            
+            ii = 0
             for _, row in pseudovox_query.iterrows():
                 dur_aug = {2: focal_duration, 0: nonfocal_duration}[label]
                 pitch_aug = {2: focal_pitch, 0: nonfocal_pitch}[label]
                 
-                speed_adjust_rate = {"long" : int(2*self.args.sr), "same" : self.args.sr, "short": int(0.5*self.args.sr)}[dur_aug]
+                speed_adjust_rate = int(dur_aug*self.args.sr) #{"long" : int(2*self.args.sr), "same" : self.args.sr, "short": int(0.5*self.args.sr)}[dur_aug]
                 pseudovox = self.load_audio(row['pseudovox_audio_fp'], speed_adjust_rate)
                 
                 if pitch_aug is not None:
@@ -383,10 +464,16 @@ class FewshotDataset(Dataset):
                                 pseudovox = self.shift_down2(pseudovox)
                 
                 rms_pseudovox = torch.std(pseudovox)
-                snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
+                if scenario == "disjunction_snr" and (label == 2):
+                    snr_db = rng.uniform(-5, 2)
+                else:
+                    snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
                 pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
-
-                pseudovox_start = rng.integers(-pseudovox.size(0), query_dur_samples)
+                
+                if (scenario == "rate_generator") and (label == 2):
+                    pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + query_chain_start) % query_dur_samples
+                else:
+                    pseudovox_start = rng.integers(-pseudovox.size(0), query_dur_samples)
                 
                 if pseudovox_start < 0:
                     # corner case: pseudovox is cut off by beginning of clip
@@ -399,18 +486,25 @@ class FewshotDataset(Dataset):
                 
                 audio_query[pseudovox_start:pseudovox_start+pseudovox.size(0)] += pseudovox
                 query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)] = torch.maximum(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], torch.full_like(query_labels[pseudovox_start:pseudovox_start+pseudovox.size(0)], label))
-                
-        if copy_support:
-            slice_start_sample = rng.integers(0, support_dur_samples-query_dur_samples)
-            audio_query = audio_support[slice_start_sample:slice_start_sample+query_dur_samples]
-            query_labels = support_labels[slice_start_sample:slice_start_sample+query_dur_samples]
+                ii+=1
+
+        if self.args.window_train_support:
+            audio_support, support_labels = apply_windowing(audio_support, support_labels, self.audio_chunk_size_samples)
 
         return audio_support, support_labels, audio_query, query_labels
-
 
     def __len__(self):
         return self.args.n_synthetic_examples
       
+def get_dataloader_distributed(dataset, args, world_size, rank):
+    train_dataloader = DataLoader(dataset,
+                                  batch_size=args.batch_size,
+                                  num_workers=args.num_workers,
+                                  pin_memory=True,
+                                  drop_last = False,
+                                  sampler=DistributedSampler(dataset, num_replicas=world_size, rank=rank))
+    return train_dataloader
+
 def get_dataloader(args, shuffle = True):
     dataset = FewshotDataset(args)
 
@@ -420,9 +514,7 @@ def get_dataloader(args, shuffle = True):
                                   num_workers=args.num_workers,
                                   pin_memory=True,
                                   drop_last = False)
-
     return train_dataloader
-
 
 class InferenceDataset(Dataset):
     def __init__(self, support_audio, support_labels, query_audio, args):
@@ -432,7 +524,10 @@ class InferenceDataset(Dataset):
         # support_audio (Tensor) : (support_dur_samples,)
         # support_labels (Tensor) : (support_dur_samples,)
         # query_audio (Tensor) : (query_dur_samples)
-        hop_ratio = 0.5
+        if args.window_inference_query:
+            hop_ratio = 0.5
+        else:
+            hop_ratio = 1
         self.args = args
         self.support_audio = support_audio
         self.support_labels = support_labels
@@ -449,13 +544,13 @@ class InferenceDataset(Dataset):
     def __len__(self):
         return 1 + (self.query_audio.size(0) - self.query_dur_samples) // self.hop_samples
     
-def get_inference_dataloader(support_audio, support_labels, query_audio, args):
+def get_inference_dataloader(support_audio, support_labels, query_audio, args, batch_size=8, num_workers=12):
     dataset = InferenceDataset(support_audio, support_labels, query_audio, args)
     
     inference_dataloader = DataLoader(dataset,
-                                      batch_size=args.batch_size,
+                                      batch_size=batch_size,
                                       shuffle=False,
-                                      num_workers=args.num_workers,
+                                      num_workers=num_workers,
                                       pin_memory=True,
                                       drop_last=False,
                                      )
@@ -466,12 +561,13 @@ if __name__ == "__main__":
     
     import argparse
     import sys
+    import tarfile
     
     args = sys.argv[1:]
     
     # set output dir
     
-    output_dir = '/home/jupyter/fewshot_demo_clips'
+    output_dir = 'fewshot_demo_clips_rss2'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
@@ -482,6 +578,7 @@ if __name__ == "__main__":
     # General    
     
     parser.add_argument('--sr', type=int, default=16000)
+    parser.add_argument('--audio-chunk-size-sec', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--n-synthetic-examples', type=int, default=20, help="limit on number of unique examples the dataloader will generate; required by pytorch Dataloder")
@@ -491,11 +588,12 @@ if __name__ == "__main__":
     parser.add_argument('--pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_bio.csv')
     parser.add_argument('--nonbio-pseudovox-info-fp', type=str, default='/home/jupyter/data/fewshot_data/data_medium/pseudovox_nonbio.csv')
     parser.add_argument('--max-pseudovox-duration', type=float, default=12, help= "the max dur in seconds that a pseudovox may be")
-    parser.add_argument('--min-cluster-size', type = int, default=6, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--min-cluster-size', type = int, default=4, help="the minimum number of pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--min-cluster-size-for-longish-pseudovox', type = int, default=2, help = "the min cluster size when a pseudovox is >=1 sec long, we allow this because there aren't that many of them")
-    parser.add_argument('--nonbio-min-cluster-size', type = int, default=6, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
+    parser.add_argument('--nonbio-min-cluster-size', type = int, default=4, help="the minimum number of nonbio pseudovox in a cluster, in order for that cluster to be included as an option")
     parser.add_argument('--birdnet-confidence-strict-lower-bound', type=float, default=0, help="will filter out examples with birdnet confidence <= this value. Mostly used to remove pseudovox with no sounds of interest")
-    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_pitch,fine_grained_duration", help = "csv of scenarios to choose from for constructing examples")
+    parser.add_argument('--scenarios', type=str, default="normal,disjunction_cross_species,disjunction_within_species,generalization_within_species,low_snr,fine_grained_snr,fine_grained_general", help = "csv of scenarios to choose from for constructing examples")
+    parser.add_argument('--window-train-support', action='store_true', help="whether to apply windowing to support audio during training")
     
     parser.add_argument('--TUT-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/TUT_background_audio_info.csv')
     parser.add_argument('--audioset-background-audio-info-fp', type = str, default='/home/jupyter/data/fewshot_data/data_medium/audioset_background_audio_info.csv')
@@ -522,9 +620,11 @@ if __name__ == "__main__":
             ends = np.where(~look_forward)[0]
             if len(ends)>0:
                 end = start+np.amin(ends)
-                d["Begin Time (s)"].append(start/args.sr)
-                d["End Time (s)"].append(end/args.sr)
-                d["Annotation"].append("POS")
+            else:
+                end = len(labels)-1
+            d["Begin Time (s)"].append(start/args.sr)
+            d["End Time (s)"].append(end/args.sr)
+            d["Annotation"].append("POS")
                 
         if labels[0]:
             start = 0
@@ -532,12 +632,18 @@ if __name__ == "__main__":
             ends = np.where(~look_forward)[0]
             if len(ends)>0:
                 end = start+np.amin(ends)
-                d["Begin Time (s)"].append(start/args.sr)
-                d["End Time (s)"].append(end/args.sr)
-                d["Annotation"].append("POS")
+            else:
+                end = len(labels)-1
+            d["Begin Time (s)"].append(start/args.sr)
+            d["End Time (s)"].append(end/args.sr)
+            d["Annotation"].append("POS")
 
         d = pd.DataFrame(d)
         d.to_csv(os.path.join(output_dir, f"selection_table_{i}.txt"), sep='\t', index=False)
-        
-        
     
+    # Tar the output directory
+    tar_path = f"{output_dir}.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        tar.add(output_dir, arcname=os.path.basename(output_dir))
+    
+    print(f"Output directory {output_dir} has been archived to {tar_path}")
