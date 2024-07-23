@@ -250,6 +250,7 @@ def main():
       'signal such that its absolute maximum value is 0.99.', type=strtobool)
   parser.add_argument(
       '-c', '--checkpoint', default=None, help='Override for checkpoint path.')
+  parser.add_argument('--batch_size', default=32, type=int, help="number of files batched together during mixit processing")
   args = parser.parse_args()
   
   # We run three tf sessions with three different graphs.
@@ -293,7 +294,7 @@ def main():
     batch_position += np.shape(input_blocks_np)[0]
     output_wav_fps.append(output_wav_fp)
     
-    if (len(batch_blocks) >= 32) or (i >= len(info_df)-1):      
+    if (len(batch_blocks) >= args.batch_size) or (i >= len(info_df)-1):      
       batch_blocks = np.concatenate(batch_blocks)
 
       output_blocks_np = _run_model_for_blocks(
