@@ -1,0 +1,451 @@
+Music
+Speech
+Vehicle
+Musical instrument
+Plucked string instrument
+Singing
+Car
+Violin, fiddle
+Drum
+Engine
+Narration, monologue
+Drum kit
+Acoustic guitar
+Child speech, kid speaking
+Bass drum
+Rail transport
+Motor vehicle (road)
+Water
+Female speech, woman speaking
+Siren
+Railroad car, train wagon
+Tools
+Silence
+Snare drum
+Wind
+Wind instrument, woodwind instrument
+Emergency vehicle
+Laughter
+Rapping
+Cheering
+Gunshot, gunfire
+Radio
+Hi-hat
+Helicopter
+Fireworks
+Stream
+Baby cry, infant cry
+Snoring
+Train horn
+Double bass
+Explosion
+Computer keyboard
+Civil defense siren
+Bell
+Chainsaw
+Tick
+Tabla
+Liquid
+Traffic noise, roadway noise
+Frying (food)
+Whack, thwack
+Sink (filling or washing)
+Burping, eructation
+Fart
+Sneeze
+Aircraft engine
+Arrow
+Giggle
+Hiccup
+Cough
+Sawing
+Tambourine
+Pump (liquid)
+Male speech, man speaking
+Keyboard (musical)
+Motorboat, speedboat
+Female singing
+Brass instrument
+Motorcycle
+Choir
+Race car, auto racing
+Idling
+Sampler
+Ukulele
+Synthesizer
+Cymbal
+Spray
+Accordion
+Scratching (performance technique)
+Child singing
+Water tap, faucet
+Applause
+Toilet flush
+Whistling
+Vacuum cleaner
+Whoop
+Sewing machine
+Bagpipes
+Subway, metro, underground
+Walk, footsteps
+Whispering
+Crying, sobbing
+Thunder
+Didgeridoo
+Church bell
+Ringtone
+Buzzer
+Splash, splatter
+Fire alarm
+Chime
+Babbling
+Glass
+Chewing, mastication
+Microwave oven
+Air horn, truck horn
+Telephone bell ringing
+Change ringing (campanology)
+Hands
+Camera
+Pour
+Pant
+Finger snapping
+Gargling
+Inside, small room
+Outside, urban or manmade
+Truck
+Bowed string instrument
+Medium engine (mid frequency)
+Marimba, xylophone
+Aircraft
+Cello
+Flute
+Glockenspiel
+Power tool
+Fixed-wing aircraft, airplane
+Waves, surf
+Clarinet
+Car Horn Honk
+Skidding
+Hammond organ
+Electronic organ
+Thunderstorm
+Steelpan
+Slap, smack
+Battle cry
+Percussion
+Trombone
+Banjo
+Mandolin
+Guitar
+Strum
+Boat, Water vehicle
+Accelerating, revving, vroom
+Electric guitar
+Orchestra
+Wind noise (microphone)
+Effects unit
+Police car (siren)
+Rain
+Printer
+Drum machine
+Fire engine, fire truck (siren)
+Skateboard
+Conversation
+Typing
+Harp
+Thump, thud
+Mechanisms
+Chuckle, chortle
+Rub
+Boom
+Hubbub, speech noise, speech babble
+Telephone
+Blender
+Whimper
+Screaming
+Artillery fire
+Electric shaver, electric razor
+Baby laughter
+Breathing
+Clapping
+Alarm
+Chink, clink
+Ding
+Toot
+Clock
+Children shouting
+Fill (with liquid)
+Boing
+Breaking
+Light engine (high frequency)
+Cash register
+Bicycle bell
+Inside, large room or hall
+Bass guitar
+Electric piano
+Trumpet
+Mallet percussion
+Organ
+Bicycle
+Rain on surface
+Drill
+Machine gun
+Lawn mower
+Smash, crash
+Trickle, dribble
+Writing
+Steam whistle
+Groan
+Hammer
+Doorbell
+Shofar
+Cowbell
+Wail, moan
+Bouncing
+Distortion
+Vibraphone
+Air brake
+Field recording
+Piano
+Male singing
+Bus
+Wood
+Tap
+Ocean
+Door
+Vibration
+Television
+Harmonica
+Basketball bounce
+Clickety-clack
+Dishes, pots, and pans
+Crumpling, crinkling
+Sitar
+Tire squeal
+Sizzle
+Slosh
+Engine starting
+Mechanical fan
+Stir
+Children playing
+Ping
+Alarm clock
+Car alarm
+Telephone dialing, DTMF
+Sine wave
+Thunk
+Coin (dropping)
+Crunch
+Zipper (clothing)
+Mosquito
+Shuffling cards
+Pulleys
+Toothbrush
+Crowd
+Saxophone
+Rowboat, canoe, kayak
+Steam
+Ambulance (siren)
+Crackle
+Fire
+Heart sounds, heartbeat
+Singing bowl
+Reverberation
+Clicking
+Jet engine
+Typewriter
+Knock
+Ice cream truck, ice cream van
+Stomach rumble
+French horn
+Theremin
+Pulse
+Train
+Run
+Vehicle horn, car horn, honking
+Timpani
+Throbbing
+Firecracker
+Belly laugh
+Train whistle
+Whistle
+Whip
+Gush
+Scissors
+Clang
+Single-lens reflex camera
+Chorus effect
+Inside, public space
+Steel guitar, slide guitar
+Waterfall
+Hum
+Raindrop
+Propeller, airscrew
+Filing (rasp)
+Reversing beeps
+Shatter
+Sanding
+Wheeze
+Bow-wow
+Car passing by
+Tick-tock
+Hiss
+Snicker
+Shout
+Echo
+Rattle
+Sliding door
+Plop
+Yell
+Drip
+Bellow
+Keys jangling
+Ding-dong
+Scratch
+Rattle (instrument)
+Hair dryer
+Dial tone
+Tearing
+Bang
+Jackhammer
+Drawer open or close
+Tuning fork
+Jingle bell
+Smoke detector, smoke alarm
+Train wheels squealing
+Caterwaul
+Crack
+Zither
+Rimshot
+Drum roll
+Burst, pop
+Wood block
+Harpsichord
+Bathtub (filling or washing)
+String section
+Cacophony
+Maraca
+Yodeling
+Electric toothbrush
+Cupboard open or close
+Tapping (guitar technique)
+Ship
+Tubular bells
+Gong
+Throat clearing
+Sigh
+Busy signal
+Zing
+Sidetone
+Crushing
+Yip
+Gurgling
+Jingle, tinkle
+Boiling
+Mains hum
+Gasp
+Power windows, electric windows
+Splinter
+Heart murmur
+Air conditioning
+Pizzicato
+Ratchet, pawl
+Chirp tone
+Heavy engine (low frequency)
+Rustling leaves
+Speech synthesizer
+Rustle
+Clatter
+Slam
+Eruption
+Cap gun
+Synthetic singing
+Shuffle
+Wind chime
+Chop
+Scrape
+Squish
+Foghorn
+Dental drill, dentist's drill
+Harmonic
+Static
+Sailboat, sailing ship
+Cutlery, silverware
+Gears
+Chopping (food)
+Creak
+Fusillade
+Roll
+Electronic tuner
+Patter
+Electronic music
+Dubstep
+Techno
+Rock and roll
+Pop music
+Rock music
+Hip hop music
+Classical music
+Soundtrack music
+House music
+Heavy metal
+Exciting music
+Country
+Electronica
+Rhythm and blues
+Background music
+Dance music
+Jazz
+Mantra
+Blues
+Trance music
+Electronic dance music
+Theme music
+Gospel music
+Music of Latin America
+Disco
+Tender music
+Punk rock
+Funk
+Music of Asia
+Drum and bass
+Vocal music
+Progressive rock
+Music for children
+Video game music
+Lullaby
+Reggae
+New-age music
+Christian music
+Independent music
+Soul music
+Music of Africa
+Ambient music
+Bluegrass
+Afrobeat
+Salsa music
+Music of Bollywood
+Beatboxing
+Flamenco
+Psychedelic rock
+Opera
+Folk music
+Christmas music
+Middle Eastern music
+Grunge
+Song
+A capella
+Sad music
+Traditional music
+Scary music
+Ska
+Chant
+Carnatic music
+Swing music
+Happy music
+Jingle (music)
+Funny music
+Angry music
+Wedding music
+Engine knocking
