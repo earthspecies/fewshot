@@ -468,7 +468,7 @@ class FewshotDataset(Dataset):
                     snr_db = rng.uniform(-5, 2)
                 else:
                     snr_db = {2: focal_snr, 0: nonfocal_snr}[label] + rng.uniform(-1, 1)
-                pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db))
+                pseudovox = pseudovox * (rms_background_audio_support / rms_pseudovox) * (10**(.1 * snr_db)) ## Double check -- I think this should be using rms**2 really
                 
                 if (scenario == "rate_generator") and (label == 2):
                     pseudovox_start = (int(ii*pseudovox.size(0)*rate_generator_constant) + query_chain_start) % query_dur_samples
