@@ -245,7 +245,7 @@ class AudioEmbeddings:
                     full_path = os.path.join(root, f)
                     self.audio_files.append(full_path)
                     count += 1
-                    if count > 10:
+                    if count > 2000:
                         break
                         # pass
         print("loaded audio")
@@ -272,27 +272,36 @@ class AudioEmbeddings:
         model_outputs = self.model_text(**inputs)
         return model_outputs.text_embeds[0].detach().cpu().numpy()
 
-    def embed_texts(self, texts: List[str]):
+    def embed_texts(self, texts: List[str], batch_size: int = 512):
         """
-        Embed a text query using a transformer.
+        Embed a list of text queries using a transformer with batching.
 
         Args:
-            text: The text query to embed.
+            texts: The list of text queries to embed.
+            batch_size: The batch size for embedding texts.
 
         Returns:
-            The embedding of the text query.
+            A numpy array containing the embeddings of the text queries.
         """
-        # Embed the text query using the same transformer used for the audios
-        if self.biolingual_two:
-            be = self.gpt_tokenizer([text + ' <|endoftext|>' for text in texts], return_tensors="pt", padding=True)
-            text_out = self.gpt_encoder(be)
-            # text_out = F.normalize(text_out, dim=-1)
-            # text_out = self.model.text_projection(text_out)
-            return text_out.detach().cpu().numpy()
+        all_embeddings = []
 
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
-        model_outputs = self.model_text(**inputs)
-        return model_outputs.text_embeds[0].detach().cpu().numpy()
+        # Process the texts in batches
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+
+            if self.biolingual_two:
+                be = self.gpt_tokenizer([text + ' <|endoftext|>' for text in batch_texts], return_tensors="pt", padding=True).to(self.device)
+                text_out = self.gpt_encoder(be)
+                all_embeddings.append(text_out.detach().cpu().numpy())
+            else:
+                inputs = self.processor(text=batch_texts, return_tensors="pt", padding=True).to(self.device)
+                model_outputs = self.model_text(**inputs)
+                all_embeddings.append(model_outputs.text_embeds.detach().cpu().numpy())
+
+        # Concatenate all the embeddings
+        all_embeddings = np.concatenate(all_embeddings, axis=0)
+        return all_embeddings
+
 
     def embed_audio(self, audio):
         """
@@ -326,10 +335,9 @@ class AudioEmbeddings:
         with open("/home/davidrobinson/fewshot/dataset_building/scripts/data_large/nonbio_sounds.txt", "r") as nonbio_file:
             nonbio_labels = nonbio_file.readlines()
             nonbio_labels = [label.strip().replace("\n", "") for label in nonbio_labels]
-            print("nonbio", nonbio_labels[0])
             
         
-        labels = list(set(species_labels + nonbio_labels))[:1000]
+        labels = list(set(species_labels + nonbio_labels))
         print("labels", labels[2])
         print("labels", len(labels))
         # Embed species labels as text embeddings
@@ -369,8 +377,9 @@ class AudioEmbeddings:
 
             for audios, files, starts, ends in tqdm(dataloader):
                 count += 1
-                if count > 20:
-                    break
+                if count > 2000:
+                    # break
+                    pass
                     # break
                 with torch.no_grad():
                     # Prepare the inputs for the model
