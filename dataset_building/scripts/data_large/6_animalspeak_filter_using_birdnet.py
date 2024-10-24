@@ -12,7 +12,7 @@ dataset_name = "animalspeak"
 PSEUDOVOX_MANIFEST = f'/home/davidrobinson/fewshot_data/data_large/{dataset_name}_pseudovox.csv'
 TARGET_FP = f'/home/davidrobinson/fewshot_data/data_large/{dataset_name}_pseudovox_with_birdnet.csv'
 
-df = pd.read_csv(PSEUDOVOX_MANIFEST)[0:50]
+df = pd.read_csv(PSEUDOVOX_MANIFEST)
 
 # Load and initialize the BirdNET-Analyzer models.
 analyzer = Analyzer()

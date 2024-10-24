@@ -31,13 +31,14 @@ EMBEDDINGS_OUTPUT_PATH = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_
 INFO_EMBEDDINGS_OUTPUT_PATH = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_NAME}_biolingual_infoembeddings.pkl'
 OUTPUT_FP = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_NAME}_pseudovox_with_biolingual.csv'
 ANIMALSPEAK_CSV_PATH = "/home/davidrobinson/biolingual-2/csvs/release/animalspeak2_release_16k_license_dup.csv"
+LOAD_EMBEDDINGS = False
 
 class Gpt2Encoder(nn.Module):
     def __init__(self, gpt2_model, tokenizer, text_projection):
         super().__init__()
         self.gpt2_model = gpt2_model
         self.tokenizer = tokenizer
-        self.device = "cuda"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.text_projection = text_projection
     
     def forward(self, be): 
@@ -244,9 +245,9 @@ class AudioEmbeddings:
                     full_path = os.path.join(root, f)
                     self.audio_files.append(full_path)
                     count += 1
-                    if count > 50:
-                        # break
-                        pass
+                    if count > 2000:
+                        break
+                        # pass
         print("loaded audio")
 
     def embed_text(self, text: str):
@@ -271,27 +272,36 @@ class AudioEmbeddings:
         model_outputs = self.model_text(**inputs)
         return model_outputs.text_embeds[0].detach().cpu().numpy()
 
-    def embed_texts(self, texts: List[str]):
+    def embed_texts(self, texts: List[str], batch_size: int = 512):
         """
-        Embed a text query using a transformer.
+        Embed a list of text queries using a transformer with batching.
 
         Args:
-            text: The text query to embed.
+            texts: The list of text queries to embed.
+            batch_size: The batch size for embedding texts.
 
         Returns:
-            The embedding of the text query.
+            A numpy array containing the embeddings of the text queries.
         """
-        # Embed the text query using the same transformer used for the audios
-        if self.biolingual_two:
-            be = self.gpt_tokenizer([text + ' <|endoftext|>' for text in texts], return_tensors="pt", padding=True)
-            text_out = self.gpt_encoder(be)
-            # text_out = F.normalize(text_out, dim=-1)
-            # text_out = self.model.text_projection(text_out)
-            return text_out[0].detach().cpu().numpy()
+        all_embeddings = []
 
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
-        model_outputs = self.model_text(**inputs)
-        return model_outputs.text_embeds[0].detach().cpu().numpy()
+        # Process the texts in batches
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i+batch_size]
+
+            if self.biolingual_two:
+                be = self.gpt_tokenizer([text + ' <|endoftext|>' for text in batch_texts], return_tensors="pt", padding=True).to(self.device)
+                text_out = self.gpt_encoder(be)
+                all_embeddings.append(text_out.detach().cpu().numpy())
+            else:
+                inputs = self.processor(text=batch_texts, return_tensors="pt", padding=True).to(self.device)
+                model_outputs = self.model_text(**inputs)
+                all_embeddings.append(model_outputs.text_embeds.detach().cpu().numpy())
+
+        # Concatenate all the embeddings
+        all_embeddings = np.concatenate(all_embeddings, axis=0)
+        return all_embeddings
+
 
     def embed_audio(self, audio):
         """
@@ -321,22 +331,26 @@ class AudioEmbeddings:
         """
         # Load labels from the CSV file
         labels_df = pd.read_csv(labels_csv_path)
-        species_labels = labels_df['species'].dropna().tolist()[0:10]
-        with open("nonbio_sounds.txt", "r") as nonbio_file:
+        species_labels = labels_df['species_common'].dropna().tolist()
+        with open("/home/davidrobinson/fewshot/dataset_building/scripts/data_large/nonbio_sounds.txt", "r") as nonbio_file:
             nonbio_labels = nonbio_file.readlines()
+            nonbio_labels = [label.strip().replace("\n", "") for label in nonbio_labels]
+            
         
-        labels = species_labels + nonbio_labels
-
+        labels = list(set(species_labels + nonbio_labels))
+        print("labels", labels[2])
+        print("labels", len(labels))
         # Embed species labels as text embeddings
         # species_embeddings = [self.embed_text(species) for species in species_labels]
         species_embeddings = self.embed_texts(labels)
+        print("species embeddings shaep", species_embeddings.shape)
 
         # Normalize species embeddings for similarity comparison
         species_embeddings = np.array(species_embeddings)
         normalized_species_embeddings = species_embeddings / np.linalg.norm(species_embeddings, axis=1)[:, np.newaxis]
 
         # Check if the audio embeddings pickle file already exists
-        if os.path.exists(pickle_path):
+        if os.path.exists(pickle_path) and LOAD_EMBEDDINGS:
             with open(pickle_path, 'rb') as file:
                 data = pickle.load(file)
                 self.embeddings = data['embeddings']
@@ -363,8 +377,9 @@ class AudioEmbeddings:
 
             for audios, files, starts, ends in tqdm(dataloader):
                 count += 1
-                if count > 20:
-                    break
+                if count > 2000:
+                    # break
+                    pass
                     # break
                 with torch.no_grad():
                     # Prepare the inputs for the model
@@ -390,7 +405,7 @@ class AudioEmbeddings:
 
                         # Find the most similar label
                         top_index = np.argmax(similarities)
-                        top_label = species_labels[top_index]
+                        top_label = labels[top_index]
                         top_similarity = similarities[top_index]
 
                         # Store the prediction
@@ -420,7 +435,7 @@ class AudioEmbeddings:
 def main():
     # Compute the audio index
     embeddings = AudioEmbeddings("davidrrobinson/BioLingual")
-    embeddings.load("/home/davidrobinson/fewshot_data/data_large/animalspeak_audio_trimmed_48k")
+    embeddings.load("/home/davidrobinson/fewshot_data/data_large/animalspeak_pseudovox_48k")
     embeddings.embed_and_predict(pickle_path=INFO_EMBEDDINGS_OUTPUT_PATH, file_to_embedding_pickle=EMBEDDINGS_OUTPUT_PATH, 
         labels_csv_path=ANIMALSPEAK_CSV_PATH, prediction_output_csv=OUTPUT_FP)
     return embeddings
