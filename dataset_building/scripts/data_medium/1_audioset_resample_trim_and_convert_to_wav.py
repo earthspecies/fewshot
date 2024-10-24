@@ -37,7 +37,7 @@ for fp in tqdm(glob(os.path.join(AUDIO_FOLDER_RAW, "*.wav"))):
     
     # print(x.shape)
     
-    new_fn = os.path.basename(fp)#.replace('.flac', '.wav')
+    new_fn = os.path.basename(fp) #.replace('.flac', '.wav')
     new_fp = os.path.join(AUDIO_FOLDER_PROCESSED, new_fn)
     
     sf.write(new_fp, x.squeeze().cpu().numpy(), MIXIT_SR)
