@@ -1,5 +1,5 @@
 '''
-Script to process original Anuraset data, so that training data can be used for few shot evaluation
+Script to process original Anuraset data, so that data can be used for few shot evaluation
 '''
 
 import os

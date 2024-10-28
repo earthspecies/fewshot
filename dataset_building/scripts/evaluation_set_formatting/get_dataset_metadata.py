@@ -72,11 +72,17 @@ for dataset_name, dataset in sorted(zip(dataset_names, datasets)):
             
             entry = dd[dataset]
             
-        elif column == "Location":
-#             dd = {"marmoset" : "Callithrix jacchus", "Anuraset" : "Anura", "carrion_crow" : "Corvus corone", "katydid" : "Tettigoniidae", "Spiders" : "Salticidae (?)", "rana_sierrae" : "Rana sierrae", "Powdermill" : "Aves",  "Hawaii" : "Aves", "right_whale" : "Eubalaena glacialis", "gibbons" : "Nomascus hainanus", "gunshots" : "Homo sapiens", "humpback" : "Megaptera novaeangliae", "ruffed_grouse" : "Bonasa umbellus"}
+        elif column == "Annotation specificity":
+            dd = {"marmoset" : "Vocalization Type", "Anuraset" : "Species", "carrion_crow" : "Species and life stage", "katydid" : "Species and recording quality", "Spiders" : "Sound Type", "rana_sierrae" : "Species", "Powdermill" : "Species",  "Hawaii" : "Species", "right_whale" : "Species", "gibbons" : "Species", "gunshots" : "Production Mechanism", "humpback" : "Species", "ruffed_grouse" : "Species"}
             
-#             entry = dd[dataset]
-            entry = " "
+        elif column == "Labels included (n recordings)": #need a better name for this...
+            dd = {"marmoset" : "", "Anuraset" : "\textit{Boana lundii} (4), \textit{Leptodactylus latrans} (4), \textit{Physalaemus albonotatus} (4)", "carrion_crow" : "Adult crow (5), Cuckoo chick (5)", "katydid" : "", "Spiders" : "", "rana_sierrae" : "", "Powdermill" : "",  "Hawaii" : "", "right_whale" : "", "gibbons" : "Gibbon (9)", "gunshots" : "Gunshot", "humpback" : "Humpback", "ruffed_grouse" : ""}
+            
+        elif column == "Location":
+            # dd = {"marmoset" : "", "Anuraset" : "", "carrion_crow" : "Spain", "katydid" : "", "Spiders" : "", "rana_sierrae" : "", "Powdermill" : "",  "Hawaii" : "", "right_whale" : "", "gibbons" : "", "gunshots" : "", "humpback" : "", "ruffed_grouse" : ""}
+            dd = {"marmoset" : "", "Anuraset" : "Brazil", "carrion_crow" : "L\'eon, Spain", "katydid" : "", "Spiders" : "", "rana_sierrae" : "", "Powdermill" : "",  "Hawaii" : "", "right_whale" : "", "gibbons" : "Hainan, China", "gunshots" : "Gabon", "humpback" : "North Pacific", "ruffed_grouse" : ""}
+            
+            entry = dd[dataset]
         else:
             entry = " "
             

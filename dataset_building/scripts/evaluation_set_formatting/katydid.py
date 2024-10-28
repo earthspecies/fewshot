@@ -44,14 +44,14 @@ def main():
                 "Clip029_BCI.wav",
                ]
     
-    AG_files = ["Clip027_BCI.wav",
+    PT_files = ["Clip017_BCI.wav",
                 "Clip028_BCI.wav",
-                "Clip022_BCI.wav",
-                "Clip001_BCI.wav",
+                "Clip016_BCI.wav",
+                "Clip013_BCI.wav",
                ]
         
-    files_to_keep = AD_files+TS_files+AG_files
-    assert len(set(files_to_keep)) == len(AD_files)+len(TS_files)+len(AG_files)
+    files_to_keep = AD_files+TS_files+PT_files
+    assert len(set(files_to_keep)) == len(AD_files)+len(TS_files)+len(PT_files)
         
     for i, audio_fp in enumerate(sorted(glob(os.path.join(audio_dir, "*.wav")))):
         if os.path.basename(audio_fp) not in files_to_keep:
@@ -73,8 +73,8 @@ def main():
             anno="AD"
         elif os.path.basename(audio_fp) in TS_files:
             anno="TS"
-        elif os.path.basename(audio_fp) in AG_files:
-            anno="AG"
+        elif os.path.basename(audio_fp) in PT_files:
+            anno="PT"
             
         st=st[st["Annotation"].isin([anno, "Unknown"])]
 
