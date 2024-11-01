@@ -33,13 +33,13 @@ def main():
     audio_dir = os.path.join(DATA_DIR, 'sounds_subselected')
     annotations_dir = os.path.join(DATA_DIR, 'sts')
     
-    anno_mapping = {"introthump" : "Unknown",
+    anno_mapping = {"introthump" : "introthump",
                     "hum" : "hum",
                     "initroscrape" : "introscrape",
                     "flickback" : "flip",
                     "flip" : "flip",
                     "flipback" : "flip",
-                    "knock" : "thump_or_knock",
+                    "knock" : "knock",
                     "introscrapeintroscrape" : "introscrape",
                     "thrum" : "thrum",
                     "THRUM" : "thrum",
@@ -50,10 +50,13 @@ def main():
                     "click" : "click",
                     "?" : "Unknown",
                     "INTROSCRAPE" : "introscrape",
-                    "knockknock" : "thump_or_knock",
-                    "thump" : "thump_or_knock",
+                    "knockknock" : "knock",
+                    "thump" : "thump",
                     np.nan : "Unknown"
                    }
+    
+    thump_files = ["011.wav", "017.wav"]
+    knock_files = ["007.wav", "015.wav"]
 
     for i, audio_fp in enumerate(sorted(glob(os.path.join(audio_dir, "*.wav")))):
         print(f"Processing {audio_fp}")
@@ -68,8 +71,10 @@ def main():
         st["Annotation"] = st["comp"].map(lambda x : anno_mapping[x])
         st = st.drop(["Low Freq (Hz)", "High Freq (Hz)"], axis = 1) # frequency bounds are too high for given sr
         
-        
-        anno = "thump_or_knock" # Look at the main drumming sound annotated in each file, which is either thump or knock.
+        if os.path.basename(audio_fp) in thump_files:
+            anno = "thump" # Look at the main drumming sound annotated in each file, which is either thump or knock.
+        elif os.path.basename(audio_fp) in knock_files:
+            anno = "knock"
             
         st = st[st["Annotation"].isin(["Unknown", anno])]
         
