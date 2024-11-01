@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import List
 import torch
 from torch.utils.data import Dataset
@@ -24,14 +24,14 @@ from transformers import AutoModel, AutoTokenizer, AutoProcessor, ClapAudioModel
 import torch.nn.functional as F
 import pandas as pd
 
-DATASET_NAME = "animalspeak"
-AUDIO_FOLDER_PROCESSED = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_NAME}_biolingual_inputs/'  # Output folder
+DATASET_NAME = "watkins"
 
 EMBEDDINGS_OUTPUT_PATH = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_NAME}_biolingual_embeddings.pkl'
 INFO_EMBEDDINGS_OUTPUT_PATH = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_NAME}_biolingual_infoembeddings.pkl'
 OUTPUT_FP = f'/home/davidrobinson/fewshot_data/data_large/{DATASET_NAME}_pseudovox_with_biolingual.csv'
 ANIMALSPEAK_CSV_PATH = "/home/davidrobinson/biolingual-2/csvs/release/animalspeak2_release_16k_license_dup.csv"
 LOAD_EMBEDDINGS = False
+WATKINS = True
 
 class Gpt2Encoder(nn.Module):
     def __init__(self, gpt2_model, tokenizer, text_projection):
@@ -156,6 +156,25 @@ def _get_waveform(filename, start_time, end_time, target_sample_rate, max_sample
 
     return waveform, target_sample_rate
 
+
+def process_file(path, chunk_duration, first_sample_only=False):
+    try:
+        audio_info = torchaudio.info(path)
+    except Exception as e:
+        print(f"Error processing {path}: {e}")
+        return []
+    sr = audio_info.sample_rate
+    total_samples = audio_info.num_frames
+    chunk_size = sr * chunk_duration
+    num_chunks = total_samples // chunk_size
+    chunks = min(num_chunks, 30)
+    if first_sample_only:
+        num_chunks = 1
+
+    chunks = [(path, chunk_duration * i, chunk_duration * (i + 1)) for i in range(num_chunks)]
+    return chunks
+
+
 class AudioDataset(Dataset):
     def __init__(self, file_paths, sample_rate, chunk_duration):
         super().__init__()
@@ -164,21 +183,10 @@ class AudioDataset(Dataset):
         self.chunk_duration = chunk_duration
         self.chunks = []
 
-        def process_file(path):
-            try:
-                audio_info = torchaudio.info(path)
-            except Exception as e:
-                print(f"Error processing {path}: {e}")
-                return []
-            num_chunks = 1
-            chunks = [(path, chunk_duration * i, chunk_duration * (i + 1)) for i in range(num_chunks)]
-            return chunks
-
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(process_file, path) for path in self.file_paths]
-            for future in futures:
+        with ProcessPoolExecutor() as executor:
+            futures = [executor.submit(process_file, path, chunk_duration) for path in self.file_paths]
+            for future in tqdm(as_completed(futures), total=len(futures)):
                 self.chunks.extend(future.result())
-
 
     def __len__(self):
         return len(self.chunks)
@@ -188,6 +196,7 @@ class AudioDataset(Dataset):
         waveform, _ = _get_waveform(path, start_time, end_time, self.sample_rate, self.sample_rate * self.chunk_duration)
         assert waveform.shape[0] == self.sample_rate * self.chunk_duration
         return waveform, path, start_time, end_time
+
 
 class AudioEmbeddings:
     """
@@ -245,7 +254,7 @@ class AudioEmbeddings:
                     full_path = os.path.join(root, f)
                     self.audio_files.append(full_path)
                     count += 1
-                    if count > 2000:
+                    if count > 2:
                         break
                         # pass
         print("loaded audio")
@@ -331,6 +340,8 @@ class AudioEmbeddings:
         """
         # Load labels from the CSV file
         labels_df = pd.read_csv(labels_csv_path)
+        if WATKINS:
+            labels_df = labels_df[labels_df["source"] == "Watkins"]
         species_labels = labels_df['species_common'].dropna().tolist()
         with open("/home/davidrobinson/fewshot/dataset_building/scripts/data_large/nonbio_sounds.txt", "r") as nonbio_file:
             nonbio_labels = nonbio_file.readlines()
@@ -342,8 +353,9 @@ class AudioEmbeddings:
         print("labels", len(labels))
         # Embed species labels as text embeddings
         # species_embeddings = [self.embed_text(species) for species in species_labels]
+        print("embedding texts")
         species_embeddings = self.embed_texts(labels)
-        print("species embeddings shaep", species_embeddings.shape)
+        print("finished emb texts, species embeddings shape", species_embeddings.shape)
 
         # Normalize species embeddings for similarity comparison
         species_embeddings = np.array(species_embeddings)
@@ -359,6 +371,7 @@ class AudioEmbeddings:
         else:
             print("making dataset")
             dataset = AudioDataset(self.audio_files, sample_rate=self.sample_rate, chunk_duration=self.chunk_length)
+            print("finished dataset")
             dataloader = DataLoader(
                 dataset=dataset,
                 batch_size=128,
@@ -377,7 +390,7 @@ class AudioEmbeddings:
 
             for audios, files, starts, ends in tqdm(dataloader):
                 count += 1
-                if count > 2000:
+                if count > 30:
                     # break
                     pass
                     # break
@@ -411,6 +424,8 @@ class AudioEmbeddings:
                         # Store the prediction
                         predictions.append({
                             'audio_file': files[i],
+                            'start': starts[i],
+                            'end': ends[i],
                             'predicted_label': top_label,
                             'similarity': top_similarity
                         })
@@ -435,7 +450,8 @@ class AudioEmbeddings:
 def main():
     # Compute the audio index
     embeddings = AudioEmbeddings("davidrrobinson/BioLingual")
-    embeddings.load("/home/davidrobinson/fewshot_data/data_large/animalspeak_pseudovox_48k")
+    # embeddings.load("/home/davidrobinson/fewshot_data/data_large/animalspeak_pseudovox_48k")
+    embeddings.load("/home/davidrobinson/fewshot_data/data_large/watkins_mastertapes")
     embeddings.embed_and_predict(pickle_path=INFO_EMBEDDINGS_OUTPUT_PATH, file_to_embedding_pickle=EMBEDDINGS_OUTPUT_PATH, 
         labels_csv_path=ANIMALSPEAK_CSV_PATH, prediction_output_csv=OUTPUT_FP)
     return embeddings
