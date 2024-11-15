@@ -9,7 +9,7 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 import seaborn as sns
 
-datasets = ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse", "audioset_strong", "DESED"]
+datasets = ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"]#, "audioset_strong", "DESED"]
 dataset_names = [x.replace('_', ' ').title() for x in datasets]
 formatted_dataset_parent_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted"
 
@@ -125,4 +125,37 @@ for i, featname in enumerate(features):
         ax[i].set_xscale('log')
     
 output_fp = os.path.join("/home/jupyter/data/fewshot_data/evaluation/formatted", "summary.png")
+plt.savefig(output_fp)
+
+
+
+features2 = ["Duration (s)", "SNR (dB)", "Peak Frequency (Hz)", "Spectral Flatness (dB)"]
+fig, ax = plt.subplots(len(features2),1, figsize=(12,12*len(features2)))
+
+for i, featname in enumerate(features2):
+    atp = []
+    for dataset in sorted(summary['Dataset'].unique()):
+        df_sub = summary[summary["Dataset"] == dataset]
+        toplotx = []
+        toploty = []
+        for fn in sorted(df_sub['Filename'].unique()):
+            for firstfive in [True, False]:
+                df_sub_sub = df_sub[df_sub['Filename'] == fn]
+                df_sub_sub = df_sub_sub[df_sub_sub['First Five'] == firstfive]
+                if firstfive:
+                    toplotx.append(df_sub_sub[featname].mean())
+                else:
+                    toploty.append(df_sub_sub[featname].mean())
+        ax[i].scatter(x=toplotx, y=toploty, label=dataset)
+        atp.extend(toplotx)
+        atp.extend(toploty)
+    ax[i].set_ylim(bottom = np.amin(atp, where=np.isfinite(atp), initial=0), top = np.amax(atp, where=np.isfinite(atp), initial=0))
+    ax[i].set_xlim(left = np.amin(atp, where=np.isfinite(atp), initial=0), right = np.amax(atp, where=np.isfinite(atp), initial=0))
+    
+    ax[i].set_title(featname)
+    ax[i].set_xlabel("First Five (Mean)")
+    ax[i].set_ylabel("Remaining (Mean)")
+    ax[i].legend()
+    
+output_fp = os.path.join("/home/jupyter/data/fewshot_data/evaluation/formatted", "summary2.png")
 plt.savefig(output_fp)
