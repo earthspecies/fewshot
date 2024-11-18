@@ -10,6 +10,7 @@ from glob import glob
 import shutil
 import librosa
 from tqdm import tqdm
+import yaml
 
 def main():
     DEV_SET_DIR='/home/jupyter/data/fewshot_data/evaluation/raw/DCASE_2024/Development_Set'
@@ -267,15 +268,20 @@ def main():
             
             out_fp = os.path.join(annot_tgt_dir, f"{clipnumber}.txt")
             d.to_csv(out_fp, sep="\t", index=False)
-            manifest["audio_fp"].append(out_fp.split("/formatted/"))
+            manifest["audio_fp"].append(out_fp.split(f"/{dname}/")[1])
             
             out_fp = os.path.join(audio_tgt_dir, f"{clipnumber}.wav")
             sf.write(out_fp, audio, sr)
             
-            manifest["selection_table_fp"].append(out_fp.split("/formatted/"))
+            manifest["selection_table_fp"].append(out_fp.split(f"/{dname}/")[1])
             
         manifest = pd.DataFrame(manifest)
         manifest.to_csv(os.path.join(dtgt_dir, "manifest.csv"), index=False)
+        
+        metadata = {"n_clips_per_dataset" : n_clips_per_dataset, "support_dur_sec" : support_dur_sec, "query_dur_sec" : query_dur_sec, "chunk_size_sec" : chunk_size_sec, "n_vox_in_support" : n_vox_in_support}
+        metadata_fp = os.path.join(dtgt_dir, "metadata.yaml")
+        with open(metadata_fp, "w") as f:
+            yaml.dump(metadata, f)
 
 if __name__ == "__main__":
     main()
