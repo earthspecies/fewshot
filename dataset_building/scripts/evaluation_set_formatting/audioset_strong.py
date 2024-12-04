@@ -29,7 +29,7 @@ def main():
     os.makedirs(audio_tgt_dir, exist_ok=True)
     os.makedirs(annot_tgt_dir, exist_ok=True)
     manifest = {"audio_fp": [], "selection_table_fp" : []}
-    
+    metadata = {'audio_fn' : [], 'audioset_ids' : [], 'label' : []}
     
     annotations = pd.read_csv(os.path.join(DATA_DIR, 'audioset_eval_strong.tsv'), sep='\t')
     
@@ -43,7 +43,7 @@ def main():
     annotation_count = {"anno" : [], "count" : []}
     for annotation in annotations["label"].unique():
         
-        annot_sub = annotations[annotations["Duration"] <9.8]
+        annot_sub = annotations[annotations["Duration"] < 8]
         annot_sub = annot_sub[annot_sub["start_time_seconds"]>0]
         annot_sub = annot_sub[annot_sub["end_time_seconds"]<10]
         
@@ -58,7 +58,7 @@ def main():
     
     for anno in valid_annos:
         print(f"Processing {annotation_dict[anno]} files")
-        annot_sub = annotations[annotations["Duration"] <9.8] # filter out some files to reduce overlapping boxes at boundaries
+        annot_sub = annotations[annotations["Duration"] <8] # filter out some files to reduce overlapping boxes at boundaries
         annot_sub = annot_sub[annot_sub["start_time_seconds"]>0]
         annot_sub = annot_sub[annot_sub["end_time_seconds"]<10]
         
@@ -72,6 +72,8 @@ def main():
             st = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : [], "Original Filename" : []}
             shift = 0
             nfiles = 0
+            
+            files_used = []
             
             for file in files_to_use:
                 
@@ -94,6 +96,8 @@ def main():
                 st["Annotation"].extend(selections["label"].map(lambda x : annotation_dict[x]))
                 st["Original Filename"].extend([file for _ in range(len(selections))])
                 shift += len(a) / sr
+                
+                files_used.append(file)
                 
                 nfiles+=1
                 if nfiles == 6:
@@ -159,9 +163,14 @@ def main():
             sf.write(new_audio_fp, audio, sr)
             st.to_csv(new_st_fp, sep='\t', index=False)
             
+            metadata['audio_fn'].append(os.path.basename(new_audio_fp))
+            metadata['audioset_ids'].append(' '.join(files_used))
+            metadata['label'].append(anno)
+            
             manifest["audio_fp"].append(new_audio_fp.split("/formatted/")[1])
             manifest["selection_table_fp"].append(new_st_fp.split("/formatted/")[1])  
-        
+    
+    pd.DataFrame(metadata).to_csv(os.path.join(dtgt_dir, "metadata.csv"), index=False)
     pd.DataFrame(manifest).to_csv(os.path.join(dtgt_dir, "manifest.csv"), index=False)
 
 if __name__ == "__main__":

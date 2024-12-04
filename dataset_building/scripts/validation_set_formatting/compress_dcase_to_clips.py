@@ -14,20 +14,36 @@ import yaml
 
 def main():
     DEV_SET_DIR='/home/jupyter/data/fewshot_data/evaluation/raw/DCASE_2024/Development_Set'
-    target_dir = '/home/jupyter/data/fewshot_data/validation/formatted'
-    
     n_clips_per_dataset = 100
-    support_dur_sec = 60
-    query_dur_sec = 30
-    chunk_size_sec = 10
     n_vox_in_support = 5
+    
+    support_dur_sec_overall = 30
+    query_dur_sec_overall = 10
+    chunk_size_sec_overall = 10
+    
+    target_dir = f'/home/jupyter/data/fewshot_data/validation/formatted/{support_dur_sec_overall}_{query_dur_sec_overall}_v1'
     
     os.makedirs(target_dir, exist_ok=True)
     
     train_dir = os.path.join(DEV_SET_DIR, "Training_Set")
     val_dir = os.path.join(DEV_SET_DIR, "Validation_Set")
+    halftime_datasets = ["BV", "PB", "PB24"]
     
     for dname in ["BV", "HT", "JD", "MT", "WMW", "HB", "ME", "PB", "PB24", "PW", "RD"]:
+        if dname in halftime_datasets:
+            halftime = True
+        else:
+            halftime = False
+        
+        if halftime:
+            support_dur_sec = support_dur_sec_overall / 2
+            query_dur_sec = query_dur_sec_overall / 2
+            chunk_size_sec = chunk_size_sec_overall / 2
+        else:
+            support_dur_sec = support_dur_sec_overall
+            query_dur_sec = query_dur_sec_overall
+            chunk_size_sec = chunk_size_sec_overall
+        
         rng = np.random.default_rng(0)
         
         print(f"Processing {dname}")
@@ -113,7 +129,7 @@ def main():
             # Subselect support audio down to 60 sec
             
             chunk_size_samples = int(sr * chunk_size_sec)
-            n_chunks_to_keep = support_dur_sec // chunk_size_sec
+            n_chunks_to_keep = int(support_dur_sec // chunk_size_sec)
 
             chunks_to_keep = []
             chunks_to_maybe_keep = []
@@ -265,20 +281,26 @@ def main():
                 d["Annotation"].append("UNK")
     
             d = pd.DataFrame(d)
+            if halftime:
+                d["Begin Time (s)"] = d["Begin Time (s)"]*2
+                d["End Time (s)"] = d["End Time (s)"]*2
             
             out_fp = os.path.join(annot_tgt_dir, f"{clipnumber}.txt")
             d.to_csv(out_fp, sep="\t", index=False)
-            manifest["audio_fp"].append(out_fp.split(f"/{dname}/")[1])
+            manifest["selection_table_fp"].append(out_fp.split(f"/{dname}/")[1])
             
             out_fp = os.path.join(audio_tgt_dir, f"{clipnumber}.wav")
-            sf.write(out_fp, audio, sr)
+            if halftime:
+                sf.write(out_fp, audio, sr//2)
+            else:
+                sf.write(out_fp, audio, sr)
             
-            manifest["selection_table_fp"].append(out_fp.split(f"/{dname}/")[1])
+            manifest["audio_fp"].append(out_fp.split(f"/{dname}/")[1])
             
         manifest = pd.DataFrame(manifest)
         manifest.to_csv(os.path.join(dtgt_dir, "manifest.csv"), index=False)
         
-        metadata = {"n_clips_per_dataset" : n_clips_per_dataset, "support_dur_sec" : support_dur_sec, "query_dur_sec" : query_dur_sec, "chunk_size_sec" : chunk_size_sec, "n_vox_in_support" : n_vox_in_support}
+        metadata = {"n_clips_per_dataset" : n_clips_per_dataset, "support_dur_sec" : support_dur_sec_overall, "query_dur_sec" : query_dur_sec_overall, "chunk_size_sec" : chunk_size_sec_overall, "n_vox_in_support" : n_vox_in_support}
         metadata_fp = os.path.join(dtgt_dir, "metadata.yaml")
         with open(metadata_fp, "w") as f:
             yaml.dump(metadata, f)

@@ -29,10 +29,12 @@ def main():
     os.makedirs(audio_tgt_dir, exist_ok=True)
     os.makedirs(annot_tgt_dir, exist_ok=True)
     manifest = {"audio_fp": [], "selection_table_fp" : []}
+    metadata = {'audio_fn' : [], 'original_ids' : [], 'label' : []}
+
     
     annotations = pd.read_csv(os.path.join(DATA_DIR, 'metadata/eval/public.tsv'), sep='\t')
     annotations["Duration"] = annotations["offset"] - annotations["onset"]
-    annotations = annotations[annotations["Duration"] <9.8]
+    annotations = annotations[annotations["Duration"] <8]
     
     
     annotation_count = {"anno" : [], "count" : []}
@@ -83,6 +85,10 @@ def main():
             sf.write(new_audio_fp, audio, sr)
             st.to_csv(new_st_fp, sep='\t', index=False)
             
+            metadata['audio_fn'].append(os.path.basename(new_audio_fp))
+            metadata['original_ids'].append(' '.join(files_to_use))
+            metadata['label'].append(anno)
+            
             manifest["audio_fp"].append(new_audio_fp.split("/formatted/")[1])
             manifest["selection_table_fp"].append(new_st_fp.split("/formatted/")[1])  
             
@@ -106,6 +112,7 @@ def main():
 #         manifest['selection_table_fp'].append(new_st_fp.split("/formatted/")[1])
         
     pd.DataFrame(manifest).to_csv(os.path.join(dtgt_dir, "manifest.csv"), index=False)
+    pd.DataFrame(metadata).to_csv(os.path.join(dtgt_dir, "metadata.csv"), index=False)
 
 if __name__ == "__main__":
     main()
