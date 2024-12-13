@@ -19,7 +19,7 @@ def main():
     
     support_dur_sec_overall = 30
     query_dur_sec_overall = 10
-    chunk_size_sec_overall = 10
+    chunk_size_sec_overall = 6
     
     target_dir = f'/home/jupyter/data/fewshot_data/validation/formatted/{support_dur_sec_overall}_{query_dur_sec_overall}_v1'
     
@@ -93,6 +93,13 @@ def main():
             assert len(allowed_start_idxs) > 0
             
             start_idx = rng.choice(allowed_start_idxs)
+            
+            ######
+            # JD is a weird dataset
+            if dname == "JD":
+                start_idx = 0
+            ######
+            
             idx = start_idx
             
             n_vox_included = 0
@@ -108,7 +115,11 @@ def main():
             st_after_support = orig_st.iloc[end_idx:]
             
             previous_vox_time = 0 if len(st_before_support) == 0 else min(st_for_support["Starttime"].min(), st_before_support["Endtime"].max())
-            time_start_support = 0.5 * (st_for_support["Starttime"].min()+previous_vox_time)
+            
+            if previous_vox_time == 0:
+                time_start_support = 0
+            else:
+                time_start_support = 0.5 * (st_for_support["Starttime"].min()+previous_vox_time)
             
             next_vox_time = audio_dur_sec if len(st_after_support) == 0 else max(st_after_support["Starttime"].min(), st_for_support["Endtime"].max())
             time_end_support = 0.5 * (st_for_support["Endtime"].max()+next_vox_time)
@@ -172,27 +183,30 @@ def main():
             assert len(support_anno_final) == support_dur_samples
             
             # Choose query audio
+            
             before_support = rng.binomial(1, 0.5)
             if before_support:
                 query_st = st_before_support
-                if len(query_st) == 0:
+                query_st_not_unk = query_st[query_st[column] != "UNK"]                       
+                if len(query_st_not_unk) == 0:
                     query_start_sec = rng.uniform(0, time_start_support)
                     
                 else:
-                    focal_idx = rng.choice(query_st.index)
-                    focal_time = query_st.loc[focal_idx]["Starttime"]
+                    focal_idx = rng.choice(query_st_not_unk.index)
+                    focal_time = query_st_not_unk.loc[focal_idx]["Starttime"]
                     query_start_sec = max(focal_time - rng.uniform(0, query_dur_sec/2), 0)
                     
                 query_end_sec = min(query_start_sec + query_dur_sec, time_start_support)
              
             else:
                 query_st = st_after_support
-                if len(query_st) == 0:
+                query_st_not_unk = query_st[query_st[column] != "UNK"]  
+                if len(query_st_not_unk) == 0:
                     query_start_sec = rng.uniform(time_end_support, audio_dur_sec)
                     
                 else:
-                    focal_idx = rng.choice(query_st.index)
-                    focal_time = query_st.loc[focal_idx]["Starttime"]
+                    focal_idx = rng.choice(query_st_not_unk.index)
+                    focal_time = query_st_not_unk.loc[focal_idx]["Starttime"]
                     query_start_sec = max(focal_time - rng.uniform(0, query_dur_sec/2), time_end_support)
                     
                 query_end_sec = min(query_start_sec + query_dur_sec, audio_dur_sec)

@@ -16,7 +16,7 @@ def main():
     train_dir = os.path.join(DEV_SET_DIR, "Training_Set")
     val_dir = os.path.join(DEV_SET_DIR, "Validation_Set")
     
-    for dname in ["BV", "HT", "JD", "MT", "WMW", "HB", "ME", "PB", "PB24", "PW", "RD"]:
+    for dname in ["HB", "ME", "PB", "PB24", "PW", "RD"]: #["BV", "HT", "JD", "MT", "WMW", "HB", "ME", "PB", "PB24", "PW", "RD"]:
         print(f"Processing {dname}")
         dtgt_dir = os.path.join(target_dir, dname)
         audio_tgt_dir = os.path.join(dtgt_dir, "audio")
