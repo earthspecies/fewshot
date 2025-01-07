@@ -6,11 +6,11 @@ from tqdm import tqdm
 
 # Define the LaTeX table content
 
-datasets = ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse", "audioset_strong", "DESED"]
+datasets = ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"] #, "audioset_strong", "DESED"]
 dataset_names = [x.replace('_', ' ').title() for x in datasets]
 formatted_dataset_parent_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted"
 
-columns = ["Dataset", "N files", "Duration (hr)", "N events", "Recording type", "Taxa"] #, "Location"]
+columns = ["Dataset", "N files", "Duration (hr)", "N events", "Recording type","Location", "Taxa", "Annotation specificity"]
 
 tex = r"""
 \documentclass{article}
@@ -74,13 +74,14 @@ for dataset_name, dataset in sorted(zip(dataset_names, datasets)):
             
         elif column == "Annotation specificity":
             dd = {"marmoset" : "Vocalization Type", "Anuraset" : "Species", "carrion_crow" : "Species and life stage", "katydid" : "Species and recording quality", "Spiders" : "Sound Type", "rana_sierrae" : "Species", "Powdermill" : "Species",  "Hawaii" : "Species", "right_whale" : "Species", "gibbons" : "Species", "gunshots" : "Production Mechanism", "humpback" : "Species", "ruffed_grouse" : "Species"}
+            entry = dd[dataset]
             
         elif column == "Labels included (n recordings)": #need a better name for this...
             dd = {"marmoset" : "", "Anuraset" : "\textit{Boana lundii} (4), \textit{Leptodactylus latrans} (4), \textit{Physalaemus albonotatus} (4)", "carrion_crow" : "Adult crow (5), Cuckoo chick (5)", "katydid" : "", "Spiders" : "", "rana_sierrae" : "", "Powdermill" : "",  "Hawaii" : "", "right_whale" : "", "gibbons" : "Gibbon (9)", "gunshots" : "Gunshot", "humpback" : "Humpback", "ruffed_grouse" : ""}
             
         elif column == "Location":
             # dd = {"marmoset" : "", "Anuraset" : "", "carrion_crow" : "Spain", "katydid" : "", "Spiders" : "", "rana_sierrae" : "", "Powdermill" : "",  "Hawaii" : "", "right_whale" : "", "gibbons" : "", "gunshots" : "", "humpback" : "", "ruffed_grouse" : ""}
-            dd = {"marmoset" : "", "Anuraset" : "Brazil", "carrion_crow" : "L\'eon, Spain", "katydid" : "", "Spiders" : "", "rana_sierrae" : "", "Powdermill" : "",  "Hawaii" : "", "right_whale" : "", "gibbons" : "Hainan, China", "gunshots" : "Gabon", "humpback" : "North Pacific", "ruffed_grouse" : ""}
+            dd = {"marmoset" : "Laboratory", "Anuraset" : "Brazil", "carrion_crow" : "L\'eon, Spain", "katydid" : "Panam\'a", "Spiders" : "Laboratory", "rana_sierrae" : "California, USA", "Powdermill" : "Pennsylvania, USA",  "Hawaii" : "Hawaii, USA", "right_whale" : "Gulf of St. Lawrence", "gibbons" : "Hainan, China", "gunshots" : "Gabon", "humpback" : "North Pacific Ocean", "ruffed_grouse" : "Pennsylvania, USA"}
             
             entry = dd[dataset]
         else:
