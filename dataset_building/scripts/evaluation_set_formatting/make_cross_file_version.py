@@ -5,7 +5,7 @@ import soundfile as sf
 import shutil
 import numpy as np
 
-dataset_names = ["marmoset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill", "Anuraset", "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"]
+dataset_names = ["carrion_crow"] #["marmoset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill", "Anuraset", "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"]
 parent_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted"
 
 

@@ -9,8 +9,26 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 import seaborn as sns
 
-datasets = ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"]#, "audioset_strong", "DESED"]
-dataset_names = [x.replace('_', ' ').title() for x in datasets]
+datasets = ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"]
+
+dataset_to_dataset_name = {"marmoset" : "MS",
+                           "Anuraset" : "AS",
+                           "carrion_crow" : "CC",
+                           "katydid" : "KD",
+                           "Spiders" : "JS", 
+                           "rana_sierrae" : "RS", 
+                           "Powdermill" : "PM", 
+                           "Hawaii" : "HA",
+                           "right_whale" : "RW", 
+                           "gibbons" : "HG",
+                           "gunshots" : "GS", 
+                           "humpback" : "HW",
+                           "ruffed_grouse" : "RG"
+                          }
+
+dataset_names = [dataset_to_dataset_name[x] for x in datasets]
+datasets = [x for _,x in sorted(zip(dataset_names, datasets))]
+
 formatted_dataset_parent_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted"
 
 features = ["Duration (s)", "Number events within next 60s", "SNR (dB)", "Peak Frequency (Hz)", "Spectral Flatness (dB)"]
@@ -23,8 +41,9 @@ summary = {"Filename" : [],
 for featname in features:
     summary[featname] = []
 
-for dataset_name, dataset in sorted(zip(dataset_names, datasets)):
+for dataset in datasets:
     print(f"Processing {dataset}")
+    dataset_name = dataset_to_dataset_name[dataset]
     
     data_dir = os.path.join(formatted_dataset_parent_dir, dataset)
     manifest = pd.read_csv(os.path.join(data_dir, "manifest.csv"))
@@ -116,46 +135,47 @@ for dataset_name, dataset in sorted(zip(dataset_names, datasets)):
         
 summary = pd.DataFrame(summary)
 
-fig, ax = plt.subplots(len(features),1, figsize=(16,7*len(features)))
-
 for i, featname in enumerate(features):
-    sns.boxplot(data=summary, y="Dataset", x=featname, ax = ax[i], whis=(0, 100), color="white")
-    sns.stripplot(data=summary[summary["First Five"]], y="Dataset", x=featname, ax = ax[i], color="blue", alpha=0.5)
+    fig, ax = plt.subplots(1,1, figsize=(8,5))
+    sns.boxplot(data=summary[~summary["First Five"]], y="Dataset", x=featname, ax = ax, whis=(0, 100), color="white")
+    sns.stripplot(data=summary[summary["First Five"]], y="Dataset", x=featname, ax = ax, color="blue", alpha=0.5)
     if featname in ["Peak Frequency (Hz)"]:
-        ax[i].set_xscale('log')
+        ax.set_xscale('log')
+    ax.set_title(f"Per-Dataset Event {featname}")
     
-output_fp = os.path.join("/home/jupyter/data/fewshot_data/evaluation/formatted", "summary.png")
-plt.savefig(output_fp)
+    output_fp = os.path.join("/home/jupyter/data/fewshot_data/evaluation/formatted", f"summary_{featname}.png")
+    plt.savefig(output_fp)
+    plt.close()
 
 
 
-features2 = ["Duration (s)", "SNR (dB)", "Peak Frequency (Hz)", "Spectral Flatness (dB)"]
-fig, ax = plt.subplots(len(features2),1, figsize=(12,12*len(features2)))
+# features2 = ["Duration (s)", "SNR (dB)", "Peak Frequency (Hz)", "Spectral Flatness (dB)"]
+# fig, ax = plt.subplots(len(features2),1, figsize=(12,12*len(features2)))
 
-for i, featname in enumerate(features2):
-    atp = []
-    for dataset in sorted(summary['Dataset'].unique()):
-        df_sub = summary[summary["Dataset"] == dataset]
-        toplotx = []
-        toploty = []
-        for fn in sorted(df_sub['Filename'].unique()):
-            for firstfive in [True, False]:
-                df_sub_sub = df_sub[df_sub['Filename'] == fn]
-                df_sub_sub = df_sub_sub[df_sub_sub['First Five'] == firstfive]
-                if firstfive:
-                    toplotx.append(df_sub_sub[featname].mean())
-                else:
-                    toploty.append(df_sub_sub[featname].mean())
-        ax[i].scatter(x=toplotx, y=toploty, label=dataset)
-        atp.extend(toplotx)
-        atp.extend(toploty)
-    ax[i].set_ylim(bottom = np.amin(atp, where=np.isfinite(atp), initial=0), top = np.amax(atp, where=np.isfinite(atp), initial=0))
-    ax[i].set_xlim(left = np.amin(atp, where=np.isfinite(atp), initial=0), right = np.amax(atp, where=np.isfinite(atp), initial=0))
+# for i, featname in enumerate(features2):
+#     atp = []
+#     for dataset in sorted(summary['Dataset'].unique()):
+#         df_sub = summary[summary["Dataset"] == dataset]
+#         toplotx = []
+#         toploty = []
+#         for fn in sorted(df_sub['Filename'].unique()):
+#             for firstfive in [True, False]:
+#                 df_sub_sub = df_sub[df_sub['Filename'] == fn]
+#                 df_sub_sub = df_sub_sub[df_sub_sub['First Five'] == firstfive]
+#                 if firstfive:
+#                     toplotx.append(df_sub_sub[featname].mean())
+#                 else:
+#                     toploty.append(df_sub_sub[featname].mean())
+#         ax[i].scatter(x=toplotx, y=toploty, label=dataset)
+#         atp.extend(toplotx)
+#         atp.extend(toploty)
+#     ax[i].set_ylim(bottom = np.amin(atp, where=np.isfinite(atp), initial=0), top = np.amax(atp, where=np.isfinite(atp), initial=0))
+#     ax[i].set_xlim(left = np.amin(atp, where=np.isfinite(atp), initial=0), right = np.amax(atp, where=np.isfinite(atp), initial=0))
     
-    ax[i].set_title(featname)
-    ax[i].set_xlabel("First Five (Mean)")
-    ax[i].set_ylabel("Remaining (Mean)")
-    ax[i].legend()
+#     ax[i].set_title(featname)
+#     ax[i].set_xlabel("First Five (Mean)")
+#     ax[i].set_ylabel("Remaining (Mean)")
+#     ax[i].legend()
     
-output_fp = os.path.join("/home/jupyter/data/fewshot_data/evaluation/formatted", "summary2.png")
-plt.savefig(output_fp)
+# output_fp = os.path.join("/home/jupyter/data/fewshot_data/evaluation/formatted", "summary2.png")
+# plt.savefig(output_fp)

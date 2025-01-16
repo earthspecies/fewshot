@@ -52,7 +52,7 @@ def main():
                         "19_CW_Amarillo_1019.wav",
                        ]
     
-    cuckoo_files = ["19_AL_Azul_1013.wav",
+    cuckoo_files = ["19_AL_Azul_1008.wav",
                     "19_AL_Azul_1015.wav",
                     "19_AL_Naranja_1006.wav",
                     "19_AL_Naranja_1014.wav",

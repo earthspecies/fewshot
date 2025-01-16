@@ -81,10 +81,10 @@ def main():
         new_st_fn = os.path.basename(st_fp)
         new_st_fp = os.path.join(annot_tgt_dir, new_st_fn)
         
-        # merge overlaps
+        # merge overlaps, keeping track of high and low freq
         st_annos = sorted(st["Annotation"].unique())
         
-        d = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : []}
+        d = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : [], "Low Freq (Hz)" : [], "High Freq (Hz)" : []}
         
         for anno in st_annos:
             st_sub = st[st["Annotation"] == anno]
@@ -92,11 +92,15 @@ def main():
             dur_max_anno = st_sub["End Time (s)"].max() + 1
             rr = 16000
             anno_merged_np = np.zeros((int(rr * dur_max_anno),), dtype=bool)
-
+            freq_low_np = np.full((int(rr * dur_max_anno),), np.infty)
+            freq_high_np = np.zeros((int(rr * dur_max_anno),), dtype=float)
+            
             for i, row in st_sub.iterrows():
                 begin = int(row["Begin Time (s)"] * rr)
                 end = int(row["End Time (s)"] * rr)
                 anno_merged_np[begin:end] = True
+                freq_low_np[begin:end] = np.minimum(freq_low_np[begin:end], np.full_like(freq_low_np[begin:end], row["Low Freq (Hz)"]))
+                freq_high_np[begin:end] = np.maximum(freq_high_np[begin:end], np.full_like(freq_high_np[begin:end], row["High Freq (Hz)"]))
                 
             starts = anno_merged_np[1:] * ~anno_merged_np[:-1]
             starts = np.where(starts)[0] + 1
@@ -111,6 +115,8 @@ def main():
                 d["Begin Time (s)"].append(start/rr)
                 d["End Time (s)"].append(end/rr)
                 d["Annotation"].append(anno)
+                d["High Freq (Hz)"].append(np.amax(freq_high_np[start:end]))
+                d["Low Freq (Hz)"].append(np.amin(freq_low_np[start:end]))
 
             if anno_merged_np[0]:
                 start = 0
@@ -123,9 +129,59 @@ def main():
                 d["Begin Time (s)"].append(start/rr)
                 d["End Time (s)"].append(end/rr)
                 d["Annotation"].append(anno)
+                d["High Freq (Hz)"].append(np.amax(freq_high_np[start:end]))
+                d["Low Freq (Hz)"].append(np.amin(freq_low_np[start:end]))
                 
         st = pd.DataFrame(d)
         # end merge overlaps
+        
+        
+        
+#         # merge overlaps
+#         st_annos = sorted(st["Annotation"].unique())
+        
+#         d = {"Begin Time (s)" : [], "End Time (s)" : [], "Annotation" : []}
+        
+#         for anno in st_annos:
+#             st_sub = st[st["Annotation"] == anno]
+        
+#             dur_max_anno = st_sub["End Time (s)"].max() + 1
+#             rr = 16000
+#             anno_merged_np = np.zeros((int(rr * dur_max_anno),), dtype=bool)
+
+#             for i, row in st_sub.iterrows():
+#                 begin = int(row["Begin Time (s)"] * rr)
+#                 end = int(row["End Time (s)"] * rr)
+#                 anno_merged_np[begin:end] = True
+                
+#             starts = anno_merged_np[1:] * ~anno_merged_np[:-1]
+#             starts = np.where(starts)[0] + 1
+
+#             for start in tqdm(starts):
+#                 look_forward = anno_merged_np[start:]
+#                 ends = np.where(~look_forward)[0]
+#                 if len(ends)>0:
+#                     end = start+np.amin(ends)
+#                 else:
+#                     end = len(anno_merged_np)-1
+#                 d["Begin Time (s)"].append(start/rr)
+#                 d["End Time (s)"].append(end/rr)
+#                 d["Annotation"].append(anno)
+
+#             if anno_merged_np[0]:
+#                 start = 0
+#                 look_forward = anno_merged_np[start:]
+#                 ends = np.where(~look_forward)[0]
+#                 if len(ends)>0:
+#                     end = start+np.amin(ends)
+#                 else:
+#                     end = len(anno_merged_np)-1
+#                 d["Begin Time (s)"].append(start/rr)
+#                 d["End Time (s)"].append(end/rr)
+#                 d["Annotation"].append(anno)
+                
+#         st = pd.DataFrame(d)
+#         # end merge overlaps
 
         st.to_csv(new_st_fp, sep='\t', index=False)
         manifest['selection_table_fp'].append(new_st_fp.split("/formatted/")[1])

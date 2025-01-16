@@ -9,7 +9,8 @@ import subprocess
 source_data_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted"
 target_data_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted_for_dcase"
 
-datasets = [os.path.basename(x[:-1]) for x in sorted(glob("/home/jupyter/data/fewshot_data/evaluation/formatted/*crossfile*/"))]
+datasets = ["carrion_crow_crossfile"]
+#[os.path.basename(x[:-1]) for x in sorted(glob("/home/jupyter/data/fewshot_data/evaluation/formatted/*crossfile*/"))]
 #["katydid_sixthtime"]
 #["HB_doubletime", "PW_doubletime", "RD_doubletime"]
 #["katydid_halftime", "marmoset_halftime", "Spiders_halftime", "PB_halftime", "PB24_halftime"]
