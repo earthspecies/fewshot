@@ -101,7 +101,7 @@ for i, dataset in enumerate(datasets):
         
 event_similarity = pd.DataFrame(event_similarity)
 with sns.color_palette("colorblind"):
-    ax = sns.scatterplot(data=event_similarity, x = "within_file", y = "cross_file", hue = "Dataset", alpha = 0.5, s=20)
+    ax = sns.scatterplot(data=event_similarity, x = "within_file", y = "cross_file", hue = "Dataset", alpha = 0.5, s=24)
 print(sum(event_similarity["within_file"] > event_similarity["cross_file"]) / len(event_similarity))
 ax.set_xlabel("Within-recording support-query similarity")
 ax.set_ylabel("Cross-recording support-query similarity")
@@ -109,7 +109,7 @@ ax.set_title("Event similarity, for within- and cross-recording versions")
 ax.set_xlim(0,1)
 ax.set_ylim(0,1)
 ax.plot([0,1], [0,1], alpha = 0.2)
-plt.savefig(os.path.join(formatted_dataset_parent_dir, "event_similarity_comparison.png"))
+plt.savefig(os.path.join(formatted_dataset_parent_dir, "event_similarity_comparison.pdf"))
 plt.close()
 
 
@@ -211,7 +211,7 @@ for i, dataset in enumerate(datasets):
         
 background_similarity = pd.DataFrame(background_similarity)
 with sns.color_palette("colorblind"):
-    ax = sns.scatterplot(data=background_similarity, x = "within_file", y = "cross_file", hue = "Dataset", alpha = 0.5, s=20)
+    ax = sns.scatterplot(data=background_similarity, x = "within_file", y = "cross_file", hue = "Dataset", alpha = 0.5, s=24)
 print(sum(event_similarity["within_file"] > event_similarity["cross_file"]) / len(event_similarity))
 print(sum(background_similarity["within_file"] > background_similarity["cross_file"]) / len(background_similarity))
 ax.set_xlabel("Within-recording support-query similarity")
@@ -220,5 +220,5 @@ ax.set_title("Background similarity, for within- and cross-recording versions")
 ax.set_xlim(0,1)
 ax.set_ylim(0,1)
 ax.plot([0,1], [0,1], alpha = 0.2)
-plt.savefig(os.path.join(formatted_dataset_parent_dir, "background_similarity_comparison.png"))
+plt.savefig(os.path.join(formatted_dataset_parent_dir, "background_similarity_comparison.pdf"))
 plt.close()
