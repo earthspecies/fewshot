@@ -1,1 +1,1 @@
-DATA_BASE = "/home/davidrobinson"
+DATA_BASE = "/home/ubuntu"
