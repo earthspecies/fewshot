@@ -9,12 +9,16 @@ import subprocess
 source_data_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted"
 target_data_dir = "/home/jupyter/data/fewshot_data/evaluation/formatted_for_dcase"
 
-datasets = ["carrion_crow_crossfile"]
+# datasets = ["carrion_crow_crossfile"]
 #[os.path.basename(x[:-1]) for x in sorted(glob("/home/jupyter/data/fewshot_data/evaluation/formatted/*crossfile*/"))]
 #["katydid_sixthtime"]
 #["HB_doubletime", "PW_doubletime", "RD_doubletime"]
-#["katydid_halftime", "marmoset_halftime", "Spiders_halftime", "PB_halftime", "PB24_halftime"]
-#["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse", "audioset_strong", "DESED", "HB", "ME", "PB", "PB24", "PW", "RD"]
+datasets = ["katydid_sixthtime", "marmoset_halftime", "Spiders_halftime", "PB_halftime", "PB24_halftime"]
+datasets += ["katydid_crossfile_sixthtime", "marmoset_crossfile_halftime", "Spiders_crossfile_halftime"]
+datasets += ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse", "HB", "ME", "PB", "PB24", "PW", "RD"]
+datasets += [x+"_crossfile" for x in ["marmoset", "Anuraset", "carrion_crow", "katydid", "Spiders", "rana_sierrae", "Powdermill",  "Hawaii", "right_whale", "gibbons", "gunshots", "humpback", "ruffed_grouse"]]
+
+assert len(datasets) == 19+13+5+3
 
 if not os.path.exists(target_data_dir):
     os.makedirs(target_data_dir)
@@ -41,6 +45,8 @@ for dataset in tqdm(datasets):
         
         dcase_st["Starttime"] = st["Begin Time (s)"]
         dcase_st["Endtime"] = st["End Time (s)"]
+        dcase_st["Lowfreq"] = st["Low Freq (Hz)"]
+        dcase_st["Highfreq"] = st["High Freq (Hz)"]
         
         def convert_anno(x):
             if x == "Unknown":
